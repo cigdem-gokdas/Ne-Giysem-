@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Ne giysem?",
+    "slug": "ne-giysem",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Ne giysem? kıyafetlerini ve kombin günlüğünü oluşturmak için seçtiğin fotoğraflara erişir.",
+          "cameraPermission": "Ne giysem? kombin günlüğüne fotoğraf çekip eklemen için kameranı kullanır.",
+          "microphonePermission": false
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#271B19",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
