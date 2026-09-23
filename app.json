@@ -2,6 +2,10 @@
   "expo": {
     "name": "Ne giysem?",
     "slug": "ne-giysem",
+    "scheme": [
+      "negiysem",
+      "com.cigdemgokdas.negiysem"
+    ],
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,12 +18,24 @@
           "cameraPermission": "Ne giysem? kombin günlüğüne fotoğraf çekip eklemen için kameranı kullanır.",
           "microphonePermission": false
         }
-      ]
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true
+        }
+      ],
+      "expo-sharing"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cigdemgokdas.negiysem",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.cigdemgokdas.negiysem",
       "adaptiveIcon": {
         "backgroundColor": "#271B19",
         "foregroundImage": "./assets/android-icon-foreground.png",

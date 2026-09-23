@@ -41,7 +41,7 @@ export function UserProfileScreen() {
     let alive = true;
     setLoading(true);
     setFailed(false);
-    Promise.all([getPublicUser(params.userId), getPublicPostsForUser(params.userId), isSelf ? Promise.resolve(false) : isFollowing(viewerId, params.userId)])
+    Promise.all([getPublicUser(params.userId), getPublicPostsForUser(params.userId, viewerId), isSelf ? Promise.resolve(false) : isFollowing(viewerId, params.userId)])
       .then(([person, nextPosts, follows]) => { if (alive) { setProfile(person); setPosts(nextPosts); setIsFollowing(follows); } })
       .catch(() => { if (alive) setFailed(true); })
       .finally(() => { if (alive) setLoading(false); });

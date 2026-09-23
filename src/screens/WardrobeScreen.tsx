@@ -111,7 +111,7 @@ export function WardrobeScreen() {
 
   return (
     <ScreenFrame>
-      <ScreenHeading eyebrow="NE GİYSEM?  /  01" title="Gardırobun" subtitle="Sevdiğin parçaların küçük bir arşivi." onSettingsPress={() => navigation.navigate('Settings')} />
+      <ScreenHeading eyebrow="NE GİYSEM?  /  01" title="Gardırobun" subtitle="Sevdiğin parçaların küçük bir arşivi." showNotifications onSettingsPress={() => navigation.navigate('Settings')} />
       {isLoading ? (
         <View style={styles.centerState}><ActivityIndicator size="large" color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
       ) : loadError ? (

@@ -14,10 +14,16 @@ import { SettingsScreen } from '../screens/SettingsScreen';
 import { AuthScreen } from '../screens/AuthScreen';
 import { DiscoverScreen } from '../screens/DiscoverScreen';
 import { UserProfileScreen } from '../screens/UserProfileScreen';
+import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
+import { VerifyEmailScreen } from '../screens/VerifyEmailScreen';
 
 export type RootStackParamList = { MainTabs: undefined; AddClothing: undefined; Settings: undefined; UserProfile: { userId: string } };
-export type AuthStackParamList = { Auth: undefined };
-export type MainTabParamList = { Discover: undefined; Wardrobe: undefined; OutfitChat: undefined; Gallery: undefined };
+export type AuthStackParamList = {
+  Auth: undefined;
+  ForgotPassword: undefined;
+  VerifyEmail: { username: string; email: string; password: string; acceptedTerms: true };
+};
+export type MainTabParamList = { Discover: undefined; Wardrobe: undefined; OutfitChat: undefined; Profile: undefined };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Auth = createNativeStackNavigator<AuthStackParamList>();
@@ -35,13 +41,13 @@ function MainTabs() {
         tabBarInactiveTintColor: colors.textFaint,
         tabBarLabelStyle: { fontFamily: fonts.sans, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, marginTop: 2 },
         tabBarStyle: { backgroundColor: colors.backgroundRaised, borderTopColor: colors.borderSoft, borderTopWidth: 1, height: 66 + insets.bottom, paddingTop: 7, paddingBottom: 7 + insets.bottom },
-        tabBarIcon: ({ color, size }) => <Feather name={route.name === 'Discover' ? 'compass' : route.name === 'Wardrobe' ? 'grid' : route.name === 'OutfitChat' ? 'message-circle' : 'image'} size={size - 2} color={color} />,
+        tabBarIcon: ({ color, size }) => <Feather name={route.name === 'Discover' ? 'compass' : route.name === 'Wardrobe' ? 'grid' : route.name === 'OutfitChat' ? 'message-circle' : 'user'} size={size - 2} color={color} />,
       })}
     >
-      <Tab.Screen name="Discover" component={DiscoverScreen} options={{ title: 'Ana Ekran' }} />
+      <Tab.Screen name="Discover" component={DiscoverScreen} options={{ title: 'Keşfet' }} />
       <Tab.Screen name="Wardrobe" component={WardrobeScreen} options={{ title: 'Gardırop' }} />
-      <Tab.Screen name="OutfitChat" component={OutfitChatScreen} options={{ title: 'Kombin Sohbet' }} />
-      <Tab.Screen name="Gallery" component={OutfitHistoryScreen} options={{ title: 'Galeri' }} />
+      <Tab.Screen name="OutfitChat" component={OutfitChatScreen} options={{ title: 'Sohbet' }} />
+      <Tab.Screen name="Profile" component={OutfitHistoryScreen} options={{ title: 'Profilim' }} />
     </Tab.Navigator>
   );
 }
@@ -58,7 +64,11 @@ function MainStack() {
 }
 
 function AuthStack() {
-  return <Auth.Navigator screenOptions={{ headerShown: false }}><Auth.Screen name="Auth" component={AuthScreen} /></Auth.Navigator>;
+  return <Auth.Navigator screenOptions={{ headerShown: false }}>
+    <Auth.Screen name="Auth" component={AuthScreen} />
+    <Auth.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+    <Auth.Screen name="VerifyEmail" component={VerifyEmailScreen} />
+  </Auth.Navigator>;
 }
 
 export function AppNavigator() {

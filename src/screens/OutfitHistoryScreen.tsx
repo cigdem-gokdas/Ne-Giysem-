@@ -1,15 +1,20 @@
 import { Feather } from '@expo/vector-icons';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
 import { MoodBoardCollage } from '../components/MoodBoardCollage';
-import { useUserId } from '../auth/AuthContext';
+import { SocialAvatar } from '../components/SocialAvatar';
+import { useAuth, useUserId } from '../auth/AuthContext';
 import { createMoodBoard, deleteMoodBoard, getMoodBoards, type MoodBoard } from '../data/moodBoards';
 import { addGalleryEntry, deleteGalleryEntry, getGalleryEntries, type GalleryEntry } from '../data/outfitGallery';
 import { getClothingItems, type ClothingItem } from '../data/wardrobe';
+import { getPublicUser, updateAvatar, updateBio } from '../data/social';
+import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 
 function formatDate(iso: string): string {
@@ -54,6 +59,8 @@ function MoodBoardCard({ board, wardrobeById, onDelete }: { board: MoodBoard; wa
 
 export function OutfitHistoryScreen() {
   const userId = useUserId();
+  const { user } = useAuth();
+  const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList, 'Profile'>>();
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
   const [entries, setEntries] = useState<GalleryEntry[]>([]);
@@ -76,6 +83,9 @@ export function OutfitHistoryScreen() {
   const [isSavingBoard, setIsSavingBoard] = useState(false);
   const [pendingBoardDelete, setPendingBoardDelete] = useState<MoodBoard | null>(null);
   const [isDeletingBoard, setIsDeletingBoard] = useState(false);
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [bio, setBio] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
   const columns = width >= 600 ? 3 : 2;
   const cardWidth = (width - 48 - 12 * (columns - 1)) / columns;
   const wardrobeById = new Map(wardrobe.map((item) => [item.id, item]));
@@ -85,18 +95,44 @@ export function OutfitHistoryScreen() {
     let active = true;
     setLoading(true);
     setLoadError(false);
-    Promise.all([getGalleryEntries(userId), getMoodBoards(userId), getClothingItems(userId)])
-      .then(([savedPhotos, savedBoards, savedWardrobe]) => {
+    Promise.all([getGalleryEntries(userId), getMoodBoards(userId), getClothingItems(userId), getPublicUser(userId)])
+      .then(([savedPhotos, savedBoards, savedWardrobe, profile]) => {
         if (active) {
           setEntries(savedPhotos);
           setBoards(savedBoards);
           setWardrobe(savedWardrobe);
+          setAvatarUri(profile?.avatarUri ?? null);
+          setBio(profile?.bio ?? '');
         }
       })
       .catch(() => { if (active) setLoadError(true); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [isFocused, reloadKey, userId]);
+
+  async function chooseAvatar() {
+    if (savingProfile) return;
+    setSavingProfile(true);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.82 });
+      if (!result.canceled && result.assets[0]?.uri) setAvatarUri(await updateAvatar(userId, result.assets[0].uri));
+    } catch {
+      Alert.alert('Fotoğraf seçilemedi', 'Profil fotoğrafın güncellenemedi.');
+    } finally { setSavingProfile(false); }
+  }
+
+  async function saveBio() {
+    if (savingProfile) return;
+    setSavingProfile(true);
+    try {
+      await updateBio(userId, bio);
+      const profile = await getPublicUser(userId);
+      setBio(profile?.bio ?? '');
+      Alert.alert('Kaydedildi', 'Biyografin güncellendi.');
+    } catch {
+      Alert.alert('Kaydedilemedi', 'Biyografin güncellenemedi.');
+    } finally { setSavingProfile(false); }
+  }
 
   function openBoardModal() {
     setBoardTitle('');
@@ -205,7 +241,18 @@ export function OutfitHistoryScreen() {
 
   return (
     <ScreenFrame>
-      <ScreenHeading eyebrow="KİŞİSEL STİL GÜNLÜĞÜ" title="Galeri" subtitle={activeSection === 'journal' ? 'Giydiğin kombinlerden kendine küçük bir arşiv.' : 'Gardırobundan kendi stil hikâyeni kur.'} />
+      <ScreenHeading eyebrow="KİŞİSEL STİL DEFTERİN" title="Profilim" subtitle="Fotoğrafların, panoların ve sana ait küçük stil notları." showNotifications onSettingsPress={() => navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('Settings')} />
+      <View style={styles.profileCard}>
+        <Pressable style={styles.profileAvatar} onPress={() => { void chooseAvatar(); }} disabled={savingProfile} accessibilityRole="button" accessibilityLabel="Profil fotoğrafını değiştir">
+          <SocialAvatar username={user?.username ?? ''} uri={avatarUri} size={64} />
+          <View style={styles.avatarEdit}><Feather name="camera" size={12} color={colors.ink} /></View>
+        </Pressable>
+        <View style={styles.profileFields}>
+          <Text style={styles.profileName}>{user?.username}</Text>
+          <TextInput style={styles.profileBio} value={bio} onChangeText={setBio} placeholder="Kısa bir biyografi yaz..." placeholderTextColor={colors.textFaint} maxLength={160} multiline accessibilityLabel="Biyografi" />
+          <Pressable style={[styles.bioSave, savingProfile && styles.disabled]} onPress={() => { void saveBio(); }} disabled={savingProfile}><Text style={styles.bioSaveText}>Profili Kaydet</Text></Pressable>
+        </View>
+      </View>
       <View style={styles.segmentedControl}>
         <Pressable style={[styles.segment, activeSection === 'journal' && styles.activeSegment]} onPress={() => setActiveSection('journal')} accessibilityRole="tab" accessibilityState={{ selected: activeSection === 'journal' }}>
           <Feather name="camera" size={15} color={activeSection === 'journal' ? colors.ink : colors.textMuted} />
@@ -332,6 +379,14 @@ export function OutfitHistoryScreen() {
 }
 
 const styles = StyleSheet.create({
+  profileCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 14, marginHorizontal: 24, marginBottom: 16, padding: 16, borderRadius: 17, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  profileAvatar: { position: 'relative' },
+  avatarEdit: { position: 'absolute', right: -2, bottom: -2, width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.sage, borderWidth: 2, borderColor: colors.surface },
+  profileFields: { flex: 1 },
+  profileName: { color: colors.pink, fontFamily: fonts.serif, fontSize: 20, marginBottom: 7 },
+  profileBio: { minHeight: 50, maxHeight: 75, color: colors.text, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18, textAlignVertical: 'top', paddingHorizontal: 11, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundRaised },
+  bioSave: { alignSelf: 'flex-end', marginTop: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 9, backgroundColor: colors.lavender },
+  bioSaveText: { color: colors.ink, fontFamily: fonts.sans, fontSize: 10, fontWeight: '800' },
   segmentedControl: { flexDirection: 'row', marginHorizontal: 24, marginBottom: 15, padding: 4, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundRaised },
   segment: { flex: 1, minHeight: 39, borderRadius: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   activeSegment: { backgroundColor: colors.sage },

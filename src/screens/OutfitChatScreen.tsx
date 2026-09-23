@@ -280,7 +280,7 @@ export function OutfitChatScreen() {
   return (
     <ScreenFrame>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
-        <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} centerTitle />
+        <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} centerTitle showNotifications />
         {isLoadingWardrobe ? (
           <View style={styles.centerState}><ActivityIndicator color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
         ) : loadError ? (

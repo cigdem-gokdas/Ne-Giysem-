@@ -22,6 +22,7 @@ const db = {
   },
 };
 const legacy = new Map();
+const secureValues = new Map();
 const asyncStorage = {
   multiGet: async (keys) => keys.map((key) => [key, legacy.get(key) ?? null]),
   multiRemove: async (keys) => keys.forEach((key) => legacy.delete(key)),
@@ -49,6 +50,12 @@ const mocks = {
     getRandomBytesAsync: async (count) => crypto.randomBytes(count),
     randomUUID: crypto.randomUUID,
   },
+  'expo-secure-store': {
+    WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'WHEN_UNLOCKED_THIS_DEVICE_ONLY',
+    getItemAsync: async (key) => secureValues.get(key) ?? null,
+    setItemAsync: async (key, value) => { secureValues.set(key, value); },
+    deleteItemAsync: async (key) => { secureValues.delete(key); },
+  },
   '@react-native-async-storage/async-storage': { __esModule: true, default: asyncStorage },
 };
 const cache = new Map();
@@ -62,7 +69,7 @@ function load(relativePath) {
   const module = { exports: {} };
   cache.set(fullPath, module.exports);
   vm.runInNewContext(compiled, {
-    module, exports: module.exports, console,
+    module, exports: module.exports, console, btoa, atob,
     require: (id) => {
       if (id.startsWith('.')) return load(path.relative(path.resolve(__dirname, '../src/data'), path.resolve(path.dirname(fullPath), id)) + '.ts');
       if (mocks[id]) return mocks[id];
@@ -82,6 +89,9 @@ async function main() {
   const history = load('outfitHistory.ts');
   const moodBoards = load('moodBoards.ts');
   const social = load('social.ts');
+  const interactions = load('interactions.ts');
+  const account = load('account.ts');
+  const sessionStore = load('../auth/sessionStore.ts');
   sqlite.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password TEXT NOT NULL);
     CREATE TABLE gallery (id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, imageUri TEXT NOT NULL, note TEXT NOT NULL, createdAt TEXT NOT NULL);
@@ -91,11 +101,11 @@ async function main() {
   `);
   await database.initDB();
 
-  for (const table of ['users', 'wardrobe', 'chat_sessions', 'gallery', 'mood_boards', 'follows', 'api_usage']) {
+  for (const table of ['users', 'wardrobe', 'chat_sessions', 'gallery', 'mood_boards', 'follows', 'api_usage', 'likes', 'comments', 'notifications', 'reports', 'blocked_users']) {
     assert.ok(sqlite.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', table));
   }
   assert.equal(sqlite.prepare('SELECT is_public FROM gallery WHERE id = ?').get('older-photo').is_public, 1);
-  for (const column of ['avatarUri', 'bio', 'share_gallery', 'share_boards']) {
+  for (const column of ['email', 'auth_provider', 'google_sub', 'avatarUri', 'avatar_uri', 'bio', 'role', 'terms_accepted_at', 'share_gallery', 'share_boards']) {
     assert.ok(sqlite.prepare('PRAGMA table_info(users)').all().some((row) => row.name === column));
   }
   const oldClothing = { id: 'old-coat', imageUri: 'file:///docs/wardrobe-photos/old-coat.jpg', tags: { tur: 'dış giyim', renk: 'bordo', desen: 'düz' } };
@@ -107,8 +117,18 @@ async function main() {
   files.add(oldClothing.imageUri);
   files.add(oldPhoto.imageUri);
 
-  const first = await auth.registerUser('  Cigdem  ', 'secret123');
+  const userCountBeforeVerification = sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count;
+  await auth.ensureRegistrationAvailable('Bekleyen Hesap', 'pending@example.com', 'secret123');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, userCountBeforeVerification);
+
+  await assert.rejects(() => auth.registerUser('Reddeden', 'red@example.com', 'secret123', false), /KVKK/);
+  const first = await auth.registerUser('  Cigdem  ', 'CIGDEM@example.com', 'secret123', true);
   assert.equal(first.username, 'Cigdem');
+  assert.equal(first.email, 'cigdem@example.com');
+  const secureSession = await sessionStore.createSecureSession(first);
+  assert.equal((await sessionStore.restoreSecureSession()).claims.sub, first.id);
+  secureValues.set('ne_giysem_session_v1', `${secureSession.token.slice(0, -1)}${secureSession.token.endsWith('0') ? '1' : '0'}`);
+  assert.equal(await sessionStore.restoreSecureSession(), null);
   await migration.migrateLegacyDataForUser(first.id);
   await migration.migrateLegacyDataForUser(first.id);
   assert.equal(legacy.size, 0);
@@ -119,9 +139,23 @@ async function main() {
   assert.equal(sqlite.prepare('SELECT son_kullanim FROM wardrobe WHERE id = ?').get('old-coat').son_kullanim, 0);
   await assert.rejects(() => auth.signInUser('Cigdem', 'wrong'), /hatalı/);
   assert.equal((await auth.signInUser('cigdem', 'secret123')).id, first.id);
-  await assert.rejects(() => auth.registerUser('CIGDEM', 'otherpass'), /kayıtlı/);
+  assert.equal((await auth.signInUser('CIGDEM@example.com', 'secret123')).id, first.id);
+  await assert.rejects(() => auth.registerUser('CIGDEM', 'different@example.com', 'otherpass', true), /kayıtlı/);
+  await assert.rejects(() => auth.registerUser('Farkli', 'cigdem@example.com', 'otherpass', true), /kayıtlı/);
+  await assert.rejects(() => auth.changePassword(first.id, 'wrong', 'secret789'), /doğru değil/);
+  await auth.changePassword(first.id, 'secret123', 'secret789');
+  await assert.rejects(() => auth.signInUser('Cigdem', 'secret123'), /hatalı/);
+  await auth.resetPassword('cigdem@example.com', 'secret4567');
+  assert.equal((await auth.signInUser('Cigdem', 'secret4567')).id, first.id);
+  const linked = await auth.upsertGoogleUser({ sub: 'google-linked', email: 'cigdem@example.com', name: 'Çiğdem', picture: null });
+  assert.equal(linked.id, first.id);
+  const google = await auth.upsertGoogleUser({ sub: 'google-new', email: 'google@example.com', name: 'Derya Google', picture: 'https://example.com/avatar.jpg' });
+  assert.equal(google.authProvider, 'google');
+  assert.equal((await auth.upsertGoogleUser({ sub: 'google-new', email: 'google@example.com', name: 'Başka Ad' })).id, google.id);
+  await assert.rejects(() => auth.signInUser('google@example.com', 'anything'), /hatalı/);
+  await assert.rejects(() => auth.ensurePasswordResettable('google@example.com'), /Google/);
 
-  const second = await auth.registerUser('Derya', 'secret456');
+  const second = await auth.registerUser('Derya', 'derya@example.com', 'secret456', true);
   await migration.migrateLegacyDataForUser(second.id);
   assert.equal((await wardrobe.getClothingItems(second.id)).length, 0);
   assert.equal((await chat.getChatSessions(second.id)).length, 0);
@@ -151,21 +185,21 @@ async function main() {
   const newPhoto = await gallery.addGalleryEntry(second.id, 'file:///cache/look.jpg', '  Okul kombini  ');
   assert.equal(newPhoto.note, 'Okul kombini');
   assert.equal(newPhoto.isPublic, true);
-  assert.equal((await social.getFeedPosts(second.id)).length, 2);
+  assert.equal((await social.getFeedPosts(second.id)).length, 5);
   await social.setFollowing(second.id, first.id, true);
   assert.equal(await social.isFollowing(second.id, first.id), true);
   const followedFeed = await social.getFeedPosts(second.id);
-  assert.equal(followedFeed.length, 2);
-  assert.equal(followedFeed.every((post) => post.user.id === first.id), true);
-  assert.equal(followedFeed.find((post) => post.kind === 'board').items[0].id, 'old-coat');
-  assert.equal((await social.getPublicPostsForUser(first.id)).length, 2);
-  await social.updateBio(first.id, 'Vintage stil ve kahve');
+  assert.equal(followedFeed.length, 5);
+  assert.equal(followedFeed.some((post) => post.user.id === first.id), true);
+  assert.equal(followedFeed.find((post) => post.kind === 'board' && post.user.id === first.id).items[0].id, 'old-coat');
+  assert.equal((await social.getPublicPostsForUser(first.id, second.id)).length, 2);
+  await social.updateBio(first.id, '<script>alert(1)</script> Vintage <b>stil</b> ve kahve');
   assert.equal((await social.getPublicUser(first.id)).bio, 'Vintage stil ve kahve');
   await social.setShareSetting(first.id, 'gallery', false);
-  assert.equal((await social.getPublicPostsForUser(first.id)).length, 1);
+  assert.equal((await social.getPublicPostsForUser(first.id, second.id)).length, 1);
   await social.setShareSetting(first.id, 'boards', false);
-  assert.equal((await social.getPublicPostsForUser(first.id)).length, 0);
-  assert.equal((await social.getFeedPosts(second.id)).every((post) => post.user.id === second.id), true);
+  assert.equal((await social.getPublicPostsForUser(first.id, second.id)).length, 0);
+  assert.equal((await social.getFeedPosts(second.id)).some((post) => post.user.id === first.id), false);
   assert.equal((await gallery.getGalleryEntries(first.id))[0].isPublic, false);
   assert.equal((await moodBoards.getMoodBoards(first.id))[0].isPublic, false);
   await social.setShareSetting(second.id, 'boards', false);
@@ -174,13 +208,29 @@ async function main() {
   await social.setShareSetting(second.id, 'gallery', false);
   const hiddenPhoto = await gallery.addGalleryEntry(second.id, 'file:///cache/hidden.jpg', 'Gizli');
   assert.equal(hiddenPhoto.isPublic, false);
-  assert.equal((await social.getPublicPostsForUser(second.id)).length, 0);
+  assert.equal((await social.getPublicPostsForUser(second.id, first.id)).length, 0);
   await social.setShareSetting(second.id, 'gallery', true);
   await social.setShareSetting(second.id, 'boards', true);
-  assert.equal((await social.getPublicPostsForUser(second.id)).length, 4);
+  assert.equal((await social.getPublicPostsForUser(second.id, first.id)).length, 4);
+  const like = await interactions.toggleLike(first.id, 'gallery', newPhoto.id);
+  assert.equal(like.liked, true);
+  assert.equal(like.likeCount, 1);
+  const comment = await interactions.addComment(first.id, 'gallery', newPhoto.id, "'); DROP TABLE users; -- <script>alert(1)</script> Güzel <b>kombin</b>");
+  assert.equal(comment.text.includes('<script>'), false);
+  assert.equal(sqlite.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'users').name, 'users');
+  assert.equal((await interactions.getNotifications(second.id)).length, 2);
+  await assert.rejects(() => interactions.deleteComment(second.id, comment.id), /yetkin yok/);
+  await interactions.deleteComment(first.id, comment.id);
+  await interactions.reportUser(first.id, second.id, '<b>Uygunsuz</b> paylaşım');
+  await assert.rejects(() => interactions.getModerationReports(second.id), /moderatör/);
+  sqlite.prepare('UPDATE users SET role = ? WHERE id = ?').run('admin', first.id);
+  assert.equal((await interactions.getModerationReports(first.id))[0].reason, 'Uygunsuz paylaşım');
   await moodBoards.deleteMoodBoard(second.id, hiddenBoard.id);
   assert.equal((await moodBoards.getMoodBoards(second.id)).length, 1);
-  assert.equal((await social.getPublicPostsForUser(second.id)).length, 3);
+  assert.equal((await social.getPublicPostsForUser(second.id, first.id)).length, 3);
+  await interactions.blockUser(first.id, second.id);
+  assert.equal((await social.getPublicPostsForUser(second.id, first.id)).length, 0);
+  assert.equal((await social.getFeedPosts(first.id)).some((post) => post.user.id === second.id), false);
   await social.setFollowing(second.id, first.id, false);
   assert.equal(await social.isFollowing(second.id, first.id), false);
   assert.equal(files.has(newPhoto.imageUri), true);
@@ -203,7 +253,25 @@ async function main() {
   assert.equal((await gallery.getGalleryEntries(first.id)).length, 1);
   await gallery.deleteGalleryEntry(first.id, 'old-photo');
   assert.equal(files.has(oldPhoto.imageUri), false);
-  console.log('SQLite şema geçişi, kullanıcı izolasyonu, Keşfet, takip, gizlilik, galeri ve ilham panosu silme geçti.');
+  const removable = await auth.registerUser('Silinecek', 'silinecek@example.com', 'secret999', true);
+  const removableItem = await wardrobe.addClothingItem(removable.id, 'file:///cache/remove-shirt.jpg', { tur: 'üst', renk: 'bordo', desen: 'düz' });
+  const removablePhoto = await gallery.addGalleryEntry(removable.id, 'file:///cache/remove-look.jpg', 'Silinecek günlük');
+  const removableAvatar = await social.updateAvatar(removable.id, 'file:///cache/remove-avatar.jpg');
+  await moodBoards.createMoodBoard(removable.id, 'Silinecek pano', [removableItem.id]);
+  await interactions.toggleLike(first.id, 'gallery', removablePhoto.id);
+  await assert.rejects(() => account.deleteUserAccount(removable.id, 'yanlış-şifre'), /doğru değil/);
+  assert.ok(sqlite.prepare('SELECT id FROM users WHERE id = ?').get(removable.id));
+  await account.deleteUserAccount(removable.id, 'secret999');
+  assert.equal(sqlite.prepare('SELECT id FROM users WHERE id = ?').get(removable.id), undefined);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM wardrobe WHERE user_id = ?').get(removable.id).count, 0);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM gallery WHERE user_id = ?').get(removable.id).count, 0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM likes WHERE post_type = 'gallery' AND post_id = ?").get(removablePhoto.id).count, 0);
+  assert.equal(files.has(removableItem.imageUri), false);
+  assert.equal(files.has(removablePhoto.imageUri), false);
+  assert.equal(files.has(removableAvatar), false);
+  await account.deleteUserAccount(google.id);
+  assert.equal(sqlite.prepare('SELECT id FROM users WHERE id = ?').get(google.id), undefined);
+  console.log('SQLite şema geçişi, yerel/Google kimliği, şifre işlemleri, kullanıcı izolasyonu, Keşfet ve silme testleri geçti.');
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

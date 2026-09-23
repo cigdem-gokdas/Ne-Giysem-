@@ -97,10 +97,22 @@ export async function resetLocalData(userId: string): Promise<void> {
   const [items, gallery] = await Promise.all([getClothingItems(userId), getGalleryEntries(userId)]);
   const db = await getDB();
   await db.withExclusiveTransactionAsync(async (tx) => {
+    await tx.runAsync(
+      `DELETE FROM likes WHERE user_id = ? OR (post_type = 'gallery' AND post_id IN (SELECT id FROM gallery WHERE user_id = ?)) OR (post_type = 'board' AND post_id IN (SELECT id FROM mood_boards WHERE user_id = ?))`,
+      userId, userId, userId,
+    );
+    await tx.runAsync(
+      `DELETE FROM comments WHERE user_id = ? OR (post_type = 'gallery' AND post_id IN (SELECT id FROM gallery WHERE user_id = ?)) OR (post_type = 'board' AND post_id IN (SELECT id FROM mood_boards WHERE user_id = ?))`,
+      userId, userId, userId,
+    );
+    await tx.runAsync('DELETE FROM notifications WHERE user_id = ?', userId);
+    await tx.runAsync('DELETE FROM reports WHERE reporter_id = ? OR reported_id = ?', userId, userId);
+    await tx.runAsync('DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?', userId, userId);
+    await tx.runAsync('DELETE FROM follows WHERE follower_id = ? OR followed_id = ?', userId, userId);
+    await tx.runAsync('DELETE FROM api_usage WHERE user_id = ?', userId);
     await tx.runAsync('DELETE FROM wardrobe WHERE user_id = ?', userId);
     await tx.runAsync('DELETE FROM gallery WHERE user_id = ?', userId);
     await tx.runAsync('DELETE FROM mood_boards WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM follows WHERE follower_id = ?', userId);
     await tx.runAsync('DELETE FROM chat_sessions WHERE user_id = ?', userId);
     await tx.runAsync('DELETE FROM outfit_history WHERE user_id = ?', userId);
   });

@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { getDB } from './database';
+import { sanitizeUserText } from '../utils/sanitize';
 
 export type GalleryEntry = { id: string; imageUri: string; note: string; createdAt: string; isPublic: boolean };
 type GalleryRow = { id: string; imageUri: string; note: string; createdAt: string; is_public: number };
@@ -19,7 +20,7 @@ export async function getGalleryEntries(userId: string): Promise<GalleryEntry[]>
   const rows = await db.getAllAsync<GalleryRow>(
     'SELECT id, imageUri, note, createdAt, is_public FROM gallery WHERE user_id = ? ORDER BY createdAt DESC, rowid DESC', userId,
   );
-  return rows.map(({ is_public, ...row }) => ({ ...row, isPublic: is_public === 1 }));
+  return rows.map(({ is_public, ...row }) => ({ ...row, note: sanitizeUserText(row.note, 160), isPublic: is_public === 1 }));
 }
 
 export async function addGalleryEntry(userId: string, sourceUri: string, note: string): Promise<GalleryEntry> {
@@ -31,7 +32,7 @@ export async function addGalleryEntry(userId: string, sourceUri: string, note: s
   photoDirectory.create({ idempotent: true, intermediates: true });
   try {
     await source.copy(destination);
-    const entry: GalleryEntry = { id, imageUri: destination.uri, note: note.trim(), createdAt: new Date().toISOString(), isPublic: false };
+    const entry: GalleryEntry = { id, imageUri: destination.uri, note: sanitizeUserText(note, 160), createdAt: new Date().toISOString(), isPublic: false };
     const db = await getDB();
     const result = await db.runAsync(
       'INSERT INTO gallery (id, user_id, imageUri, note, createdAt, is_public) SELECT ?, id, ?, ?, ?, share_gallery FROM users WHERE id = ?',
@@ -53,8 +54,12 @@ export async function deleteGalleryEntry(userId: string, id: string): Promise<vo
     'SELECT imageUri FROM gallery WHERE id = ? AND user_id = ?', id, userId,
   );
   if (!row) throw new Error('Fotoğraf bulunamadı.');
-  const result = await db.runAsync('DELETE FROM gallery WHERE id = ? AND user_id = ?', id, userId);
-  if (result.changes !== 1) throw new Error('Fotoğraf bulunamadı.');
+  await db.withExclusiveTransactionAsync(async (tx) => {
+    await tx.runAsync("DELETE FROM likes WHERE post_type = 'gallery' AND post_id = ?", id);
+    await tx.runAsync("DELETE FROM comments WHERE post_type = 'gallery' AND post_id = ?", id);
+    const result = await tx.runAsync('DELETE FROM gallery WHERE id = ? AND user_id = ?', id, userId);
+    if (result.changes !== 1) throw new Error('Fotoğraf bulunamadı.');
+  });
   deleteManagedPhoto(row.imageUri);
 }
 

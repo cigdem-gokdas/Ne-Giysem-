@@ -1,22 +1,28 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react';
-import { registerUser, signInUser, type LocalUser } from '../data/auth';
+import { registerUser, signInUser, upsertGoogleUser, type GoogleProfile, type LocalUser } from '../data/auth';
 import { initDB } from '../data/database';
 import { migrateLegacyDataForUser } from '../data/legacyMigration';
+import { deleteUserAccount } from '../data/account';
+import { clearSecureSession, createSecureSession, restoreSecureSession, type SecureSession } from './sessionStore';
 
 type AuthContextValue = {
+  session: SecureSession | null;
   user: LocalUser | null;
+  sessionToken: string | null;
   initializing: boolean;
   initError: boolean;
   retryInit: () => void;
-  login: (username: string, password: string) => Promise<void>;
-  register: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  login: (identifier: string, password: string) => Promise<void>;
+  register: (username: string, email: string, password: string, acceptedTerms: boolean) => Promise<void>;
+  loginWithGoogle: (profile: GoogleProfile) => Promise<void>;
+  logout: () => Promise<void>;
+  deleteAccount: (currentPassword?: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: PropsWithChildren) {
-  const [user, setUser] = useState<LocalUser | null>(null);
+  const [session, setSession] = useState<SecureSession | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [initError, setInitError] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
@@ -25,29 +31,48 @@ export function AuthProvider({ children }: PropsWithChildren) {
     let active = true;
     setInitializing(true);
     setInitError(false);
-    initDB()
+    initDB().then(restoreSecureSession)
+      .then((restored) => { if (active) setSession(restored); })
       .catch(() => { if (active) setInitError(true); })
       .finally(() => { if (active) setInitializing(false); });
     return () => { active = false; };
   }, [retryKey]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const signedIn = await signInUser(username, password);
-    await migrateLegacyDataForUser(signedIn.id);
-    setUser(signedIn);
+  const activate = useCallback(async (user: LocalUser) => {
+    await migrateLegacyDataForUser(user.id);
+    setSession(await createSecureSession(user));
   }, []);
 
-  const register = useCallback(async (username: string, password: string) => {
-    const created = await registerUser(username, password);
-    await migrateLegacyDataForUser(created.id);
-    setUser(created);
+  const login = useCallback(async (identifier: string, password: string) => {
+    await activate(await signInUser(identifier, password));
+  }, [activate]);
+
+  const register = useCallback(async (username: string, email: string, password: string, acceptedTerms: boolean) => {
+    await activate(await registerUser(username, email, password, acceptedTerms));
+  }, [activate]);
+
+  const loginWithGoogle = useCallback(async (profile: GoogleProfile) => {
+    await activate(await upsertGoogleUser(profile));
+  }, [activate]);
+
+  const logout = useCallback(async () => {
+    await clearSecureSession();
+    setSession(null);
   }, []);
+
+  const deleteAccount = useCallback(async (currentPassword?: string) => {
+    if (!session) throw new Error('Oturum açılmadı.');
+    await deleteUserAccount(session.claims.sub, currentPassword);
+    try { await clearSecureSession(); }
+    finally { setSession(null); }
+  }, [session]);
 
   const value = useMemo<AuthContextValue>(() => ({
-    user, initializing, initError,
+    session, user: session?.user ?? null, sessionToken: session?.token ?? null,
+    initializing, initError,
     retryInit: () => setRetryKey((current) => current + 1),
-    login, register, logout: () => setUser(null),
-  }), [user, initializing, initError, login, register]);
+    login, register, loginWithGoogle, logout, deleteAccount,
+  }), [session, initializing, initError, login, register, loginWithGoogle, logout, deleteAccount]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -59,7 +84,7 @@ export function useAuth(): AuthContextValue {
 }
 
 export function useUserId(): string {
-  const { user } = useAuth();
-  if (!user) throw new Error('Oturum açılmadı.');
-  return user.id;
+  const { session } = useAuth();
+  if (!session) throw new Error('Oturum açılmadı.');
+  return session.claims.sub;
 }
