@@ -5,19 +5,15 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/services/analyzeClothing.ts'), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
+const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-function loadWithFetch(fetchMock) {
+function load(workerPost) {
   const module = { exports: {} };
   vm.runInNewContext(compiled, {
-    module,
-    exports: module.exports,
-    fetch: fetchMock,
+    module, exports: module.exports,
     require: (name) => {
-      if (name === '../config/env') return { OPENAI_API_KEY: 'test-key' };
-      if (name === './rateLimiter') return { withApiRateLimit: (_userId, request) => request() };
+      if (name === './workerApi') return { workerPost };
+      if (name === '../data/wardrobe') return { FIT_TYPES: ['dar', 'normal', 'bol', 'bilinmiyor'], SUBTYPES: ['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'] };
       throw new Error(`Unexpected import: ${name}`);
     },
   });
@@ -25,31 +21,21 @@ function loadWithFetch(fetchMock) {
 }
 
 async function main() {
-  const analyze = loadWithFetch(async (url, options) => {
-    assert.equal(url, 'https://api.openai.com/v1/chat/completions');
-    assert.equal(options.headers.Authorization, 'Bearer test-key');
-    const request = JSON.parse(options.body);
-    assert.equal(request.model, 'gpt-5.6-luna');
-    assert.equal(request.messages[1].content[1].image_url.url, 'data:image/jpeg;base64,ZmFrZQ==');
-    assert.equal(request.response_format.type, 'json_schema');
-    return {
-      ok: true,
-      json: async () => ({
-        choices: [{ finish_reason: 'stop', message: { content: '{"tur":"üst","renk":"Kahverengi","desen":"Düz"}' } }],
-      }),
-    };
+  const analyze = load(async (userId, endpoint, body) => {
+    assert.equal(userId, 'user-1');
+    assert.equal(endpoint, '/analyze-clothing');
+    assert.equal(body.imageBase64, 'ZmFrZQ==');
+    assert.equal(body.mimeType, 'image/jpeg');
+    return { tags: { tur: 'üst', renk: 'Kahverengi', desen: 'Düz' } };
   });
   const tags = await analyze('user-1', 'ZmFrZQ==');
-  assert.equal(tags.tur, 'üst');
-  assert.equal(tags.renk, 'Kahverengi');
-  assert.equal(tags.desen, 'Düz');
+  assert.deepEqual({ ...tags }, { tur: 'üst', renk: 'Kahverengi', desen: 'Düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false });
 
-  const invalid = loadWithFetch(async () => ({
-    ok: true,
-    json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"tur":"şapka","renk":"","desen":"Düz"}' } }] }),
-  }));
+  await assert.rejects(() => analyze('user-1', ''), /Fotoğraf verisi okunamadı/);
+
+  const invalid = load(async () => ({ tags: { tur: 'şapka', renk: '', desen: 'Düz' } }));
   await assert.rejects(() => invalid('user-1', 'ZmFrZQ=='), /Invalid tag response/);
-  console.log('Analiz isteği ve JSON doğrulaması geçti.');
+  console.log('Worker görsel analiz sözleşmesi ve JSON doğrulaması geçti.');
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

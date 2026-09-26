@@ -8,7 +8,8 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
-import { CLOTHING_TYPES, deleteClothingItem, getClothingItems, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
+import { buildWardrobeSummary, getOutfitHistory, type WardrobeSummaryItem } from '../data/outfitHistory';
+import { CLOTHING_TYPES, FIT_TYPES, SUBTYPES, deleteClothingItem, getClothingItems, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 
@@ -20,6 +21,7 @@ export function WardrobeScreen() {
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
   const [items, setItems] = useState<ClothingItem[]>([]);
+  const [usageById, setUsageById] = useState<Record<string, WardrobeSummaryItem>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -35,8 +37,12 @@ export function WardrobeScreen() {
     let active = true;
     setIsLoading(true);
     setLoadError(false);
-    getClothingItems(userId)
-      .then((saved) => { if (active) setItems(saved); })
+    Promise.all([getClothingItems(userId), getOutfitHistory(userId).catch(() => [])])
+      .then(([saved, history]) => {
+        if (!active) return;
+        setItems(saved);
+        setUsageById(Object.fromEntries(buildWardrobeSummary(saved, history).map((usage) => [usage.id, usage])));
+      })
       .catch(() => { if (active) setLoadError(true); })
       .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
@@ -65,8 +71,8 @@ export function WardrobeScreen() {
           try {
             await deleteClothingItem(userId, id);
             setItems((current) => current.filter((item) => item.id !== id));
-          } catch {
-            Alert.alert('Silinemedi', 'Kıyafet silinemedi, lütfen tekrar dene.');
+          } catch (error) {
+            Alert.alert('Silinemedi', error instanceof Error ? error.message : 'Kıyafet silinemedi, lütfen tekrar dene.');
           }
         },
       },
@@ -85,16 +91,17 @@ export function WardrobeScreen() {
       setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
       Keyboard.dismiss();
       setSelectedItem(null);
-    } catch {
-      Alert.alert('Kaydedilemedi', 'Etiketler güncellenemedi, lütfen tekrar dene.');
+    } catch (error) {
+      Alert.alert('Kaydedilemedi', error instanceof Error ? error.message : 'Etiketler güncellenemedi, lütfen tekrar dene.');
     } finally {
       setIsSaving(false);
     }
   }
 
   function renderItem({ item }: { item: ClothingItem }) {
+    const useCount = usageById[item.id]?.kullanim_sayisi ?? 0;
     return (
-      <Pressable style={[styles.clothingCard, { width: itemWidth }]} onLongPress={() => openActions(item)} accessibilityLabel={`${item.tags.renk} ${item.tags.tur}, düzenlemek için basılı tut`}>
+      <Pressable style={[styles.clothingCard, { width: itemWidth }]} onPress={() => openActions(item)} onLongPress={() => openActions(item)} accessibilityLabel={`${item.tags.renk} ${item.tags.tur}, ${useCount} kombinde kullanıldı, detayları aç`}>
         <Image source={{ uri: item.imageUri }} style={styles.clothingImage} resizeMode="cover" accessibilityLabel="Kaydedilmiş kıyafet fotoğrafı" />
         <Pressable style={styles.cardAction} onPress={() => openActions(item)} accessibilityRole="button" accessibilityLabel="Kıyafet seçenekleri"><Feather name="more-horizontal" size={18} color={colors.text} /></Pressable>
         <View style={styles.clothingDetails}>
@@ -103,6 +110,7 @@ export function WardrobeScreen() {
             <Text style={[styles.tagChip, styles.turChip]}>{item.tags.tur}</Text>
             <Text style={[styles.tagChip, styles.renkChip]}>{item.tags.renk}</Text>
             <Text style={[styles.tagChip, styles.desenChip]}>{item.tags.desen}</Text>
+            {item.tags.kesim && item.tags.kesim !== 'bilinmiyor' && <Text style={[styles.tagChip, styles.desenChip]}>{item.tags.kesim} kesim</Text>}
           </View>
         </View>
       </Pressable>
@@ -167,6 +175,25 @@ export function WardrobeScreen() {
                     <View style={styles.previewTextWrap}>
                       <Text style={styles.modalTitle}>{modalMode === 'edit' ? 'Etiketleri düzenle' : 'Bu parçayla ne yapalım?'}</Text>
                       <Text style={styles.modalSubtitle}>{selectedItem.tags.renk} · {selectedItem.tags.tur}</Text>
+                      <Text style={styles.modalSubtitle}>{selectedItem.tags.altTur !== 'diğer' ? `${selectedItem.tags.altTur} · ` : ''}{selectedItem.tags.kesim ?? 'kesim bilinmiyor'}{selectedItem.tags.kemerUygun ? ' · kemere uygun' : ''}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.usageCard}>
+                    <View style={styles.usageIcon}><Feather name="repeat" size={17} color={colors.sage} /></View>
+                    <View style={styles.usageTextWrap}>
+                      <Text style={styles.usageLabel}>GİYİLME SIKLIĞI</Text>
+                      <Text style={styles.usageValue}>
+                        {(usageById[selectedItem.id]?.kullanim_sayisi ?? 0) === 0
+                          ? 'Henüz hiçbir kombinde kullanılmadı'
+                          : `${usageById[selectedItem.id]?.kullanim_sayisi} kombinde kullanıldı`}
+                      </Text>
+                      <Text style={styles.usageRecency}>
+                        {usageById[selectedItem.id]?.son_kullanim === 'hic' || usageById[selectedItem.id]?.son_kullanim === undefined
+                          ? 'Yeni parça · rotasyonda öncelikli'
+                          : usageById[selectedItem.id]?.son_kullanim === 0
+                            ? 'Son oluşturulan kombinde kullanıldı'
+                            : `Son kullanım: ${usageById[selectedItem.id]?.son_kullanim} kombin önce`}
+                      </Text>
                     </View>
                   </View>
                   {modalMode === 'actions' ? (
@@ -179,7 +206,7 @@ export function WardrobeScreen() {
                       <Text style={styles.fieldLabel}>TÜR</Text>
                       <View style={styles.typeOptions}>
                         {CLOTHING_TYPES.map((type) => (
-                          <Pressable key={type} onPress={() => setDraftTags((current) => ({ ...current, tur: type }))} style={[styles.typeChip, draftTags.tur === type && styles.typeChipSelected]}>
+                          <Pressable key={type} onPress={() => setDraftTags((current) => ({ ...current, tur: type, altTur: 'diğer', kemerUygun: false }))} style={[styles.typeChip, draftTags.tur === type && styles.typeChipSelected]}>
                             <Text style={[styles.typeChipText, draftTags.tur === type && styles.typeChipTextSelected]}>{type}</Text>
                           </Pressable>
                         ))}
@@ -188,6 +215,15 @@ export function WardrobeScreen() {
                       <TextInput style={styles.formInput} value={draftTags.renk} onChangeText={(renk) => setDraftTags((current) => ({ ...current, renk }))} placeholder="Örn. bordo" placeholderTextColor={colors.textFaint} maxLength={40} />
                       <Text style={styles.fieldLabel}>DESEN</Text>
                       <TextInput style={styles.formInput} value={draftTags.desen} onChangeText={(desen) => setDraftTags((current) => ({ ...current, desen }))} placeholder="Örn. düz" placeholderTextColor={colors.textFaint} maxLength={40} />
+                      <Text style={styles.fieldLabel}>KESİM</Text>
+                      <View style={styles.typeOptions}>
+                        {FIT_TYPES.map((fit) => <Pressable key={fit} onPress={() => setDraftTags((current) => ({ ...current, kesim: fit }))} style={[styles.typeChip, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipTextSelected]}>{fit}</Text></Pressable>)}
+                      </View>
+                      <Text style={styles.fieldLabel}>PARÇA TÜRÜ</Text>
+                      <View style={styles.typeOptions}>
+                        {SUBTYPES.filter((subtype) => subtype === 'diğer' || (draftTags.tur === 'üst' && ['tişört', 'gömlek', 'kazak'].includes(subtype)) || (draftTags.tur === 'alt' && ['pantolon', 'etek'].includes(subtype)) || (draftTags.tur === 'dış giyim' && ['ceket', 'kaban'].includes(subtype)) || (draftTags.tur === 'ayakkabı' && subtype === 'ayakkabı') || (draftTags.tur === 'aksesuar' && ['çanta', 'kemer'].includes(subtype))).map((subtype) => <Pressable key={subtype} onPress={() => setDraftTags((current) => ({ ...current, altTur: subtype }))} style={[styles.typeChip, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipTextSelected]}>{subtype}</Text></Pressable>)}
+                      </View>
+                      {draftTags.tur === 'alt' && <Pressable style={styles.actionButton} onPress={() => setDraftTags((current) => ({ ...current, kemerUygun: !current.kemerUygun }))} accessibilityRole="checkbox" accessibilityState={{ checked: !!draftTags.kemerUygun }}><Feather name={draftTags.kemerUygun ? 'check-square' : 'square'} size={18} color={colors.sage} /><Text style={styles.actionText}>Kemer kullanmaya uygun</Text></Pressable>}
                       <View style={styles.editActions}>
                         <Pressable style={styles.cancelButton} onPress={() => setModalMode('actions')} disabled={isSaving}><Text style={styles.cancelText}>Geri</Text></Pressable>
                         <Pressable style={[styles.saveButton, isSaving && styles.disabledButton]} onPress={saveTags} disabled={isSaving}><Text style={styles.saveText}>{isSaving ? 'Kaydediliyor...' : 'Kaydet'}</Text></Pressable>
@@ -244,6 +280,12 @@ const styles = StyleSheet.create({
   previewTextWrap: { flex: 1 },
   modalTitle: { color: colors.text, fontFamily: fonts.serif, fontSize: 21, lineHeight: 26 },
   modalSubtitle: { color: colors.textMuted, fontFamily: fonts.sans, fontSize: 12, marginTop: 5 },
+  usageCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 13, marginBottom: 18, borderRadius: 12, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.border },
+  usageIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.sage },
+  usageTextWrap: { flex: 1 },
+  usageLabel: { color: colors.gold, fontFamily: fonts.sans, fontSize: 9, fontWeight: '700', letterSpacing: 1.4 },
+  usageValue: { color: colors.text, fontFamily: fonts.serif, fontSize: 16, marginTop: 3 },
+  usageRecency: { color: colors.textMuted, fontFamily: fonts.sans, fontSize: 10, marginTop: 3 },
   actionList: { gap: 9 },
   actionButton: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderRadius: 12, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.border },
   actionText: { color: colors.text, fontFamily: fonts.sans, fontSize: 14, fontWeight: '600' },

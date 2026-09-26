@@ -3,18 +3,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
-import { ensurePasswordResettable, resetPassword } from '../data/auth';
+import { ensurePasswordResettable } from '../data/auth';
 import type { AuthStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'ForgotPassword'>;
 
 export function ForgotPasswordScreen({ navigation }: Props) {
-  const [stage, setStage] = useState<'request' | 'reset'>('request');
   const [identifier, setIdentifier] = useState('');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [repeat, setRepeat] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -23,21 +19,8 @@ export function ForgotPasswordScreen({ navigation }: Props) {
     setBusy(true); setError('');
     try {
       await ensurePasswordResettable(identifier);
-      Alert.alert('Kod gönderildi', 'E-postanıza 4 haneli sıfırlama kodu gönderildi (Simülasyon: Kod 1234)');
-      setStage('reset');
+      Alert.alert('Bağlantı gönderildi', 'Firebase şifre sıfırlama bağlantısı e-posta adresine gönderildi.', [{ text: 'Girişe dön', onPress: () => navigation.popToTop() }]);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Kod oluşturulamadı.'); }
-    finally { setBusy(false); }
-  }
-
-  async function savePassword() {
-    if (busy) return;
-    if (code.trim() !== '1234') { setError('Sıfırlama kodu doğru değil.'); return; }
-    if (password !== repeat) { setError('Yeni şifreler birbiriyle eşleşmiyor.'); return; }
-    setBusy(true); setError('');
-    try {
-      await resetPassword(identifier, password);
-      Alert.alert('Şifren yenilendi', 'Yeni şifrenle giriş yapabilirsin.', [{ text: 'Girişe dön', onPress: () => navigation.popToTop() }]);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Şifre değiştirilemedi.'); }
     finally { setBusy(false); }
   }
 
@@ -47,22 +30,14 @@ export function ForgotPasswordScreen({ navigation }: Props) {
         <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Girişe dön</Text></Pressable>
         <View style={styles.icon}><Feather name="key" size={29} color={colors.pink} /></View>
         <Text style={styles.eyebrow}>HESAP KURTARMA</Text>
-        <Text style={styles.title}>{stage === 'request' ? 'Anahtarını yenileyelim.' : 'Yeni şifreni seç.'}</Text>
-        <Text style={styles.subtitle}>{stage === 'request' ? 'Hesabını bulmak için kullanıcı adını veya e-postanı yaz.' : 'Simülasyon kodunu ve yeni şifreni gir.'}</Text>
+        <Text style={styles.title}>Anahtarını yenileyelim.</Text>
+        <Text style={styles.subtitle}>E-posta adresini yaz; Firebase sana güvenli bir sıfırlama bağlantısı göndersin.</Text>
         <View style={styles.card}>
-          <Text style={styles.label}>KULLANICI ADI VEYA E-POSTA</Text>
-          <TextInput style={[styles.input, stage === 'reset' && styles.readOnly]} value={identifier} onChangeText={setIdentifier} editable={stage === 'request'} autoCapitalize="none" autoCorrect={false} placeholder="Kullanıcı adın veya e-postan" placeholderTextColor={colors.textFaint} />
-          {stage === 'reset' && <>
-            <Text style={styles.label}>4 HANELİ KOD</Text>
-            <TextInput style={styles.input} value={code} onChangeText={(value) => setCode(value.replace(/\D/g, '').slice(0, 4))} keyboardType="number-pad" maxLength={4} placeholder="1234" placeholderTextColor={colors.textFaint} />
-            <Text style={styles.label}>YENİ ŞİFRE</Text>
-            <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder="En az 6 karakter" placeholderTextColor={colors.textFaint} />
-            <Text style={styles.label}>YENİ ŞİFRE TEKRARI</Text>
-            <TextInput style={styles.input} value={repeat} onChangeText={setRepeat} secureTextEntry placeholder="Yeni şifreni tekrar yaz" placeholderTextColor={colors.textFaint} />
-          </>}
+          <Text style={styles.label}>E-POSTA</Text>
+          <TextInput style={styles.input} value={identifier} onChangeText={setIdentifier} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} />
           {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void (stage === 'request' ? sendCode() : savePassword()); }} disabled={busy} accessibilityRole="button">
-            {busy ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.buttonText}>{stage === 'request' ? 'Sıfırlama Kodu Gönder' : 'Şifremi Yenile'}</Text>}
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void sendCode(); }} disabled={busy} accessibilityRole="button">
+            {busy ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.buttonText}>Sıfırlama Bağlantısı Gönder</Text>}
           </Pressable>
         </View>
       </ScrollView>

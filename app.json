@@ -19,13 +19,7 @@
           "microphonePermission": false
         }
       ],
-      [
-        "expo-secure-store",
-        {
-          "configureAndroidBackup": true
-        }
-      ],
-      "expo-sharing"
+      "expo-font"
     ],
     "ios": {
       "supportsTablet": true,

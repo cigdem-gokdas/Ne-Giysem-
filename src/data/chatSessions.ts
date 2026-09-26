@@ -1,45 +1,40 @@
-import { getDB } from './database';
+import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { firestore } from '../config/firebase';
 
 export type ChatSessionMessage =
   | { id: string; role: 'user'; text: string; createdAt: string }
   | { id: string; role: 'assistant'; text: string; selectedIds: string[]; createdAt: string };
-
 export type ChatSession = { id: string; title: string; createdAt: string; messages: ChatSessionMessage[] };
-type SessionRow = { id: string; title: string; createdAt: string; messages_json: string };
 
-function makeId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
+function makeId(): string { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`; }
 
-export function sessionTitle(firstMessage: string): string {
-  const firstSentence = firstMessage.trim().replace(/\s+/g, ' ').split(/[.!?\n]/, 1)[0];
-  return firstSentence.length > 34 ? `${firstSentence.slice(0, 33).trimEnd()}…` : firstSentence || 'Yeni sohbet';
-}
-
-function isMessage(value: unknown): value is ChatSessionMessage {
-  if (!value || typeof value !== 'object') return false;
-  const message = value as Partial<ChatSessionMessage>;
-  return typeof message.id === 'string'
-    && typeof message.text === 'string'
-    && typeof message.createdAt === 'string'
-    && (message.role === 'user' || (message.role === 'assistant'
-      && Array.isArray(message.selectedIds)
-      && message.selectedIds.every((id) => typeof id === 'string')));
-}
-
-function toSession(row: SessionRow): ChatSession {
-  const messages: unknown = JSON.parse(row.messages_json);
-  if (!Array.isArray(messages) || !messages.every(isMessage)) throw new Error('Sohbet oturumu okunamadı.');
-  return { id: row.id, title: row.title, createdAt: row.createdAt, messages };
+export function sessionTitle(text: string): string {
+  const sentence = text.trim().replace(/\s+/g, ' ').split(/[.!?\n]/, 1)[0];
+  return sentence.length > 34 ? `${sentence.slice(0, 33).trimEnd()}…` : sentence || 'Yeni sohbet';
 }
 
 export async function getChatSessions(userId: string): Promise<ChatSession[]> {
-  const db = await getDB();
-  const rows = await db.getAllAsync<SessionRow>(
-    'SELECT id, title, createdAt, messages_json FROM chat_sessions WHERE user_id = ? ORDER BY createdAt DESC, rowid DESC',
-    userId,
-  );
-  return rows.map(toSession);
+  const rows = await getDocs(query(collection(firestore, 'chat_sessions'), where('userId', '==', userId)));
+  return rows.docs.map((row) => ({ id: row.id, title: row.data().title, createdAt: row.data().createdAt, messages: Array.isArray(row.data().messages) ? row.data().messages : [] }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function deleteChatSession(userId: string, sessionId: string): Promise<void> {
+  const ref = doc(firestore, 'chat_sessions', sessionId);
+  const row = await getDoc(ref);
+  if (!row.exists() || row.data().userId !== userId) throw new Error('Sohbet bulunamadı veya silme yetkin yok.');
+  const batch = writeBatch(firestore);
+  batch.delete(ref);
+  await batch.commit();
+}
+
+export async function clearChatSessions(userId: string): Promise<void> {
+  const rows = await getDocs(query(collection(firestore, 'chat_sessions'), where('userId', '==', userId)));
+  for (let offset = 0; offset < rows.docs.length; offset += 450) {
+    const batch = writeBatch(firestore);
+    rows.docs.slice(offset, offset + 450).forEach((row) => batch.delete(row.ref));
+    await batch.commit();
+  }
 }
 
 export async function appendChatMessage(
@@ -47,30 +42,19 @@ export async function appendChatMessage(
   sessionId: string | null,
   message: { role: 'user'; text: string } | { role: 'assistant'; text: string; selectedIds: string[] },
 ): Promise<{ session: ChatSession; sessions: ChatSession[] }> {
-  const db = await getDB();
-  const createdAt = new Date().toISOString();
-  const savedMessage: ChatSessionMessage = { ...message, id: makeId(), createdAt };
+  const saved = { ...message, id: makeId(), createdAt: new Date().toISOString() } as ChatSessionMessage;
   let session: ChatSession;
-  if (sessionId === null) {
+  if (!sessionId) {
     if (message.role !== 'user') throw new Error('Yeni sohbet kullanıcı mesajıyla başlamalı.');
-    session = { id: makeId(), title: sessionTitle(message.text), createdAt, messages: [savedMessage] };
-    await db.runAsync(
-      'INSERT INTO chat_sessions (id, user_id, title, createdAt, messages_json) VALUES (?, ?, ?, ?, ?)',
-      session.id, userId, session.title, session.createdAt, JSON.stringify(session.messages),
-    );
+    const ref = doc(collection(firestore, 'chat_sessions'));
+    session = { id: ref.id, title: sessionTitle(message.text), createdAt: saved.createdAt, messages: [saved] };
+    await setDoc(ref, { userId, title: session.title, createdAt: session.createdAt, messages: session.messages });
   } else {
-    const row = await db.getFirstAsync<SessionRow>(
-      'SELECT id, title, createdAt, messages_json FROM chat_sessions WHERE id = ? AND user_id = ?',
-      sessionId, userId,
-    );
-    if (!row) throw new Error('Sohbet bulunamadı.');
-    const current = toSession(row);
-    session = { ...current, messages: [...current.messages, savedMessage] };
-    const result = await db.runAsync(
-      'UPDATE chat_sessions SET messages_json = ? WHERE id = ? AND user_id = ?',
-      JSON.stringify(session.messages), sessionId, userId,
-    );
-    if (result.changes !== 1) throw new Error('Sohbet bulunamadı.');
+    const ref = doc(firestore, 'chat_sessions', sessionId);
+    const row = await getDoc(ref);
+    if (!row.exists() || row.data().userId !== userId) throw new Error('Sohbet bulunamadı.');
+    session = { id: ref.id, title: row.data().title, createdAt: row.data().createdAt, messages: [...(row.data().messages ?? []), saved] };
+    await updateDoc(ref, { messages: session.messages });
   }
   return { session, sessions: await getChatSessions(userId) };
 }

@@ -1,0 +1,111 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owner(data) { return signedIn() && data.userId == request.auth.uid; }
+    function userExists(userId) { return exists(/databases/$(database)/documents/users/$(userId)); }
+    function isAdmin() {
+      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    function post(postId) { return get(/databases/$(database)/documents/posts/$(postId)); }
+    function postReadable(postId) {
+      return signedIn() && post(postId).data != null &&
+        (post(postId).data.isPublic == true || post(postId).data.userId == request.auth.uid);
+    }
+    function blockedEitherWay(otherId) {
+      return exists(/databases/$(database)/documents/blocked_users/$(request.auth.uid + '_' + otherId)) ||
+        exists(/databases/$(database)/documents/blocked_users/$(otherId + '_' + request.auth.uid));
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId && request.resource.data.role == 'user';
+      allow update: if signedIn() && request.auth.uid == userId &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.authProvider == resource.data.authProvider;
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /wardrobe/{id} {
+      allow read: if owner(resource.data);
+      allow create: if owner(request.resource.data);
+      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if owner(resource.data);
+    }
+    match /chat_sessions/{id} {
+      allow read: if owner(resource.data);
+      allow create: if owner(request.resource.data);
+      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if owner(resource.data);
+    }
+    match /outfit_history/{id} {
+      allow read: if owner(resource.data);
+      allow create: if owner(request.resource.data);
+      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if owner(resource.data);
+    }
+    match /mood_boards/{id} {
+      allow read: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
+      allow create: if owner(request.resource.data);
+      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if owner(resource.data);
+    }
+    match /posts/{id} {
+      allow read: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
+      allow create: if owner(request.resource.data) && request.resource.data.kind in ['gallery', 'board'];
+      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if owner(resource.data);
+    }
+
+    match /likes/{id} {
+      allow read: if owner(resource.data) || postReadable(resource.data.postId);
+      allow create: if owner(request.resource.data) && id == request.auth.uid + '_' + request.resource.data.postId &&
+        post(request.resource.data.postId).data.isPublic == true &&
+        !blockedEitherWay(post(request.resource.data.postId).data.userId);
+      allow delete: if owner(resource.data) || post(resource.data.postId).data.userId == request.auth.uid;
+    }
+    match /comments/{id} {
+      allow read: if owner(resource.data) || postReadable(resource.data.postId);
+      allow create: if owner(request.resource.data) && request.resource.data.text is string &&
+        request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 300 &&
+        post(request.resource.data.postId).data.isPublic == true &&
+        !blockedEitherWay(post(request.resource.data.postId).data.userId);
+      allow update: if false;
+      allow delete: if owner(resource.data) || post(resource.data.postId).data.userId == request.auth.uid;
+    }
+    match /notifications/{id} {
+      allow read, delete: if owner(resource.data);
+      allow update: if owner(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow create: if signedIn() && request.resource.data.actorId == request.auth.uid &&
+        request.resource.data.userId == post(request.resource.data.postId).data.userId &&
+        request.resource.data.type in ['like', 'comment'] &&
+        request.resource.data.message is string && request.resource.data.message.size() <= 180 &&
+        request.resource.data.isRead == false && !blockedEitherWay(request.resource.data.userId);
+    }
+    match /follows/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.followerId == request.auth.uid &&
+        id == request.auth.uid + '_' + request.resource.data.followedId &&
+        userExists(request.resource.data.followedId) && !blockedEitherWay(request.resource.data.followedId);
+      allow delete: if signedIn() &&
+        (resource.data.followerId == request.auth.uid || resource.data.followedId == request.auth.uid);
+    }
+    match /blocked_users/{id} {
+      allow read: if signedIn() &&
+        (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.blockerId == request.auth.uid &&
+        id == request.auth.uid + '_' + request.resource.data.blockedId && userExists(request.resource.data.blockedId);
+      allow delete: if signedIn() &&
+        (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+    }
+    match /reports/{id} {
+      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid &&
+        request.resource.data.reportedId != request.auth.uid && userExists(request.resource.data.reportedId) &&
+        request.resource.data.reason is string && request.resource.data.reason.size() <= 240;
+      allow read: if isAdmin() || (signedIn() &&
+        (resource.data.reporterId == request.auth.uid || resource.data.reportedId == request.auth.uid));
+      allow delete: if isAdmin() || (signedIn() &&
+        (resource.data.reporterId == request.auth.uid || resource.data.reportedId == request.auth.uid));
+    }
+  }
+}

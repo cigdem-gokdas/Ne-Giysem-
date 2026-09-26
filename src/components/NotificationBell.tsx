@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useUserId } from '../auth/AuthContext';
 import { getNotifications, markNotificationsRead, type AppNotification } from '../data/interactions';
@@ -18,11 +18,26 @@ export function NotificationBell() {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const mounted = useRef(true);
+  const loadGeneration = useRef(0);
 
-  async function load() {
-    setLoading(true);
-    try { setItems(await getNotifications(userId)); }
-    finally { setLoading(false); }
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; loadGeneration.current += 1; };
+  }, []);
+
+  async function load(): Promise<boolean> {
+    const generation = ++loadGeneration.current;
+    if (mounted.current) { setLoading(true); setLoadError(''); }
+    try {
+      const next = await getNotifications(userId);
+      if (mounted.current && generation === loadGeneration.current) setItems(next);
+      return mounted.current && generation === loadGeneration.current;
+    } catch (cause) {
+      if (mounted.current && generation === loadGeneration.current) setLoadError(cause instanceof Error ? cause.message : 'Bildirimler yüklenemedi.');
+      return false;
+    } finally { if (mounted.current && generation === loadGeneration.current) setLoading(false); }
   }
 
   useEffect(() => {
@@ -31,9 +46,13 @@ export function NotificationBell() {
 
   async function open() {
     setVisible(true);
-    await load();
-    await markNotificationsRead(userId);
-    setItems((current) => current.map((item) => ({ ...item, isRead: true })));
+    if (!await load()) return;
+    try {
+      await markNotificationsRead(userId);
+      if (mounted.current) setItems((current) => current.map((item) => ({ ...item, isRead: true })));
+    } catch (cause) {
+      if (mounted.current) setLoadError(cause instanceof Error ? cause.message : 'Bildirimler okundu olarak işaretlenemedi.');
+    }
   }
 
   const unread = items.filter((item) => !item.isRead).length;
@@ -51,6 +70,7 @@ export function NotificationBell() {
               <View><Text style={styles.eyebrow}>STİL DEFTERİN</Text><Text style={styles.title}>Bildirimler</Text></View>
               <Pressable style={styles.close} onPress={() => setVisible(false)} accessibilityRole="button" accessibilityLabel="Bildirimleri kapat"><Feather name="x" size={19} color={colors.sage} /></Pressable>
             </View>
+            {!!loadError && <Text style={styles.error} accessibilityRole="alert">{loadError}</Text>}
             {loading && items.length === 0 ? <ActivityIndicator style={styles.loader} color={colors.sage} /> : (
               <FlatList
                 data={items}
@@ -82,6 +102,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontFamily: fonts.serif, fontSize: 27, marginTop: 4 },
   close: { width: 38, height: 38, borderRadius: 11, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.backgroundRaised },
   loader: { marginTop: 40 },
+  error: { color: colors.pink, fontFamily: fonts.sans, fontSize: 12, paddingVertical: 10 },
   list: { paddingTop: 10, paddingBottom: 8 },
   emptyList: { flexGrow: 1, justifyContent: 'center' },
   notification: { flexDirection: 'row', gap: 11, paddingVertical: 13, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.borderSoft, borderRadius: 10 },

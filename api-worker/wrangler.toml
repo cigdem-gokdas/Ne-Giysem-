@@ -1,0 +1,23 @@
+name = "ne-giysem-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGINS = "https://your-production-web-domain.example"
+FIREBASE_PROJECT_ID = "ne-giysem-ca404"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "negiysem-storage"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
+
+# Secrets are added with:
+# npx wrangler secret put OPENAI_API_KEY

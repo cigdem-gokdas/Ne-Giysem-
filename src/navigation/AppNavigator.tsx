@@ -77,7 +77,7 @@ export function AppNavigator() {
     return (
       <ScreenFrame includeBottom>
         <View style={styles.startup}>
-          {initializing ? <ActivityIndicator color={colors.sage} /> : <Text style={styles.startupTitle}>Yerel veritabanı açılamadı</Text>}
+          {initializing ? <ActivityIndicator color={colors.sage} /> : <Text style={styles.startupTitle}>Bulut bağlantısı kurulamadı</Text>}
           <Text style={styles.startupText}>{initializing ? 'Stil defterin hazırlanıyor...' : 'Lütfen yeniden dene.'}</Text>
           {initError && <Pressable style={styles.retryButton} onPress={retryInit}><Text style={styles.retryText}>Tekrar dene</Text></Pressable>}
         </View>

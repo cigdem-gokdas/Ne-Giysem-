@@ -1,121 +1,76 @@
-import { Directory, File, Paths } from 'expo-file-system';
-import { getDB } from './database';
-import { deleteGalleryPhotos, getGalleryEntries } from './outfitGallery';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch, type QueryDocumentSnapshot } from 'firebase/firestore';
+import { firestore } from '../config/firebase';
+import { deleteR2Object, uploadImageToR2, type ImageUploadMetadata } from '../services/r2Storage';
+import { deleteOwnedPost } from './postCleanup';
 
-export type ClothingTags = { tur: string; renk: string; desen: string };
+export const FIT_TYPES = ['dar', 'normal', 'bol', 'bilinmiyor'] as const;
+export const SUBTYPES = ['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'] as const;
+export type ClothingFit = typeof FIT_TYPES[number];
+export type ClothingSubtype = typeof SUBTYPES[number];
+export type ClothingTags = { tur: string; renk: string; desen: string; kesim?: ClothingFit; altTur?: ClothingSubtype; kemerUygun?: boolean };
 export type ClothingItem = { id: string; imageUri: string; tags: ClothingTags };
 export const CLOTHING_TYPES = ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'] as const;
+type WardrobeDoc = { userId: string; imageUri: string; storageKey?: string; tur: string; renk: string; desen: string; kesim?: ClothingFit; altTur?: ClothingSubtype; kemerUygun?: boolean; createdAt: string };
 
-type WardrobeRow = { id: string; imageUri: string; tur: string; renk: string; desen: string };
-const photoDirectory = new Directory(Paths.document, 'wardrobe-photos');
-
-function toItem(row: WardrobeRow): ClothingItem {
-  return { id: row.id, imageUri: row.imageUri, tags: { tur: row.tur, renk: row.renk, desen: row.desen } };
+function item(id: string, data: WardrobeDoc): ClothingItem {
+  return { id, imageUri: data.imageUri, tags: { tur: data.tur, renk: data.renk, desen: data.desen, kesim: data.kesim ?? 'bilinmiyor', altTur: data.altTur ?? 'diğer', kemerUygun: data.kemerUygun ?? false } };
 }
 
-function deleteManagedPhoto(imageUri: string): void {
-  const managedDirectory = `${photoDirectory.uri.replace(/\/$/, '')}/`;
-  if (!imageUri.startsWith(managedDirectory)) return;
-  try {
-    const photo = new File(imageUri);
-    if (photo.exists) photo.delete();
-  } catch { /* A deleted database row must stay deleted. */ }
+async function deleteInBatches(rows: QueryDocumentSnapshot[]): Promise<void> {
+  for (let offset = 0; offset < rows.length; offset += 450) {
+    const batch = writeBatch(firestore);
+    rows.slice(offset, offset + 450).forEach((row) => batch.delete(row.ref));
+    await batch.commit();
+  }
 }
 
 export async function getClothingItems(userId: string): Promise<ClothingItem[]> {
-  const db = await getDB();
-  const rows = await db.getAllAsync<WardrobeRow>(
-    'SELECT id, imageUri, tur, renk, desen FROM wardrobe WHERE user_id = ? ORDER BY rowid DESC',
-    userId,
-  );
-  return rows.map(toItem);
+  const rows = await getDocs(query(collection(firestore, 'wardrobe'), where('userId', '==', userId)));
+  return rows.docs.map((row) => item(row.id, row.data() as WardrobeDoc)).sort((a, b) => b.id.localeCompare(a.id));
 }
 
-export async function addClothingItem(userId: string, sourceUri: string, tags: ClothingTags): Promise<ClothingItem> {
-  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  const source = new File(sourceUri);
-  const extension = source.extension.toLowerCase();
-  const safeExtension = /^\.(jpg|jpeg|png|heic|heif|webp|gif)$/.test(extension) ? extension : '.jpg';
-  const destination = new File(photoDirectory, `${id}${safeExtension}`);
-  photoDirectory.create({ idempotent: true, intermediates: true });
-  try {
-    await source.copy(destination);
-    const db = await getDB();
-    await db.runAsync(
-      'INSERT INTO wardrobe (id, user_id, imageUri, tur, renk, desen, son_kullanim) VALUES (?, ?, ?, ?, ?, ?, NULL)',
-      id, userId, destination.uri, tags.tur, tags.renk, tags.desen,
-    );
-    return { id, imageUri: destination.uri, tags };
-  } catch (error) {
-    try { if (destination.exists) destination.delete(); } catch { /* Keep original error. */ }
-    throw error;
-  }
+export async function addClothingItem(userId: string, sourceUri: string, tags: ClothingTags, uploadMetadata?: ImageUploadMetadata): Promise<ClothingItem> {
+  const ref = doc(collection(firestore, 'wardrobe'));
+  const upload = await uploadImageToR2(userId, 'wardrobe', sourceUri, uploadMetadata);
+  const data: WardrobeDoc = { userId, imageUri: upload.url, storageKey: upload.key, tur: tags.tur, renk: tags.renk, desen: tags.desen, kesim: tags.kesim ?? 'bilinmiyor', altTur: tags.altTur ?? 'diğer', kemerUygun: tags.kemerUygun ?? false, createdAt: new Date().toISOString() };
+  try { await setDoc(ref, data); return item(ref.id, data); }
+  catch (error) { await deleteR2Object(upload.key).catch(() => undefined); throw error; }
 }
 
 export async function updateClothingTags(userId: string, id: string, tags: ClothingTags): Promise<ClothingItem> {
-  const cleaned: ClothingTags = {
-    tur: tags.tur.trim().toLocaleLowerCase('tr-TR'),
-    renk: tags.renk.trim(),
-    desen: tags.desen.trim(),
-  };
-  if (!CLOTHING_TYPES.some((type) => type === cleaned.tur) || !cleaned.renk || !cleaned.desen) {
-    throw new Error('Etiketler eksik veya geçersiz.');
-  }
-  const db = await getDB();
-  const result = await db.runAsync(
-    'UPDATE wardrobe SET tur = ?, renk = ?, desen = ? WHERE id = ? AND user_id = ?',
-    cleaned.tur, cleaned.renk, cleaned.desen, id, userId,
-  );
-  if (result.changes !== 1) throw new Error('Kıyafet bulunamadı.');
-  const row = await db.getFirstAsync<WardrobeRow>(
-    'SELECT id, imageUri, tur, renk, desen FROM wardrobe WHERE id = ? AND user_id = ?',
-    id, userId,
-  );
-  if (!row) throw new Error('Kıyafet bulunamadı.');
-  return toItem(row);
+  const ref = doc(firestore, 'wardrobe', id);
+  const snapshot = await getDoc(ref);
+  if (!snapshot.exists() || snapshot.data().userId !== userId) throw new Error('Kıyafet bulunamadı.');
+  const cleaned = { tur: tags.tur.trim().toLocaleLowerCase('tr-TR'), renk: tags.renk.trim(), desen: tags.desen.trim(), kesim: tags.kesim ?? 'bilinmiyor', altTur: tags.altTur ?? 'diğer', kemerUygun: tags.kemerUygun ?? false };
+  if (!CLOTHING_TYPES.includes(cleaned.tur as typeof CLOTHING_TYPES[number]) || !cleaned.renk || !cleaned.desen || !FIT_TYPES.includes(cleaned.kesim) || !SUBTYPES.includes(cleaned.altTur)) throw new Error('Etiketler eksik veya geçersiz.');
+  await updateDoc(ref, cleaned);
+  return item(id, { ...(snapshot.data() as WardrobeDoc), ...cleaned });
 }
 
 export async function deleteClothingItem(userId: string, id: string): Promise<void> {
-  const db = await getDB();
-  const row = await db.getFirstAsync<{ imageUri: string }>(
-    'SELECT imageUri FROM wardrobe WHERE id = ? AND user_id = ?', id, userId,
-  );
-  if (!row) throw new Error('Kıyafet bulunamadı.');
-  const result = await db.runAsync('DELETE FROM wardrobe WHERE id = ? AND user_id = ?', id, userId);
-  if (result.changes !== 1) throw new Error('Kıyafet bulunamadı.');
-  deleteManagedPhoto(row.imageUri);
+  const ref = doc(firestore, 'wardrobe', id);
+  const snapshot = await getDoc(ref);
+  if (!snapshot.exists() || snapshot.data().userId !== userId) throw new Error('Kıyafet bulunamadı.');
+  await deleteDoc(ref);
+  await deleteR2Object(snapshot.data().storageKey).catch(() => undefined);
 }
 
 export async function clearClothingItems(userId: string): Promise<void> {
-  const items = await getClothingItems(userId);
-  const db = await getDB();
-  await db.runAsync('DELETE FROM wardrobe WHERE user_id = ?', userId);
-  items.forEach((item) => deleteManagedPhoto(item.imageUri));
+  const rows = await getDocs(query(collection(firestore, 'wardrobe'), where('userId', '==', userId)));
+  await deleteInBatches(rows.docs);
+  await Promise.all(rows.docs.map((row) => deleteR2Object(row.data().storageKey).catch(() => undefined)));
 }
 
 export async function resetLocalData(userId: string): Promise<void> {
-  const [items, gallery] = await Promise.all([getClothingItems(userId), getGalleryEntries(userId)]);
-  const db = await getDB();
-  await db.withExclusiveTransactionAsync(async (tx) => {
-    await tx.runAsync(
-      `DELETE FROM likes WHERE user_id = ? OR (post_type = 'gallery' AND post_id IN (SELECT id FROM gallery WHERE user_id = ?)) OR (post_type = 'board' AND post_id IN (SELECT id FROM mood_boards WHERE user_id = ?))`,
-      userId, userId, userId,
-    );
-    await tx.runAsync(
-      `DELETE FROM comments WHERE user_id = ? OR (post_type = 'gallery' AND post_id IN (SELECT id FROM gallery WHERE user_id = ?)) OR (post_type = 'board' AND post_id IN (SELECT id FROM mood_boards WHERE user_id = ?))`,
-      userId, userId, userId,
-    );
-    await tx.runAsync('DELETE FROM notifications WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM reports WHERE reporter_id = ? OR reported_id = ?', userId, userId);
-    await tx.runAsync('DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?', userId, userId);
-    await tx.runAsync('DELETE FROM follows WHERE follower_id = ? OR followed_id = ?', userId, userId);
-    await tx.runAsync('DELETE FROM api_usage WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM wardrobe WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM gallery WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM mood_boards WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM chat_sessions WHERE user_id = ?', userId);
-    await tx.runAsync('DELETE FROM outfit_history WHERE user_id = ?', userId);
-  });
-  items.forEach((item) => deleteManagedPhoto(item.imageUri));
-  deleteGalleryPhotos(gallery);
+  const posts = await getDocs(query(collection(firestore, 'posts'), where('userId', '==', userId)));
+  for (const post of posts.docs) {
+    const kind = post.data().kind;
+    if (kind === 'gallery' || kind === 'board') await deleteOwnedPost(userId, post.id, kind);
+    await deleteR2Object(post.data().storageKey).catch(() => undefined);
+  }
+  await clearClothingItems(userId);
+  for (const name of ['mood_boards', 'chat_sessions', 'outfit_history', 'likes', 'comments', 'notifications']) {
+    const rows = await getDocs(query(collection(firestore, name), where('userId', '==', userId)));
+    await deleteInBatches(rows.docs);
+  }
 }

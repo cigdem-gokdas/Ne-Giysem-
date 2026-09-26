@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://your-production-web-domain.example"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["Content-Type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

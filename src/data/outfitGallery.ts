@@ -1,68 +1,47 @@
-import { Directory, File, Paths } from 'expo-file-system';
-import { getDB } from './database';
+import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { firestore } from '../config/firebase';
+import { deleteR2Object, uploadImageToR2 } from '../services/r2Storage';
 import { sanitizeUserText } from '../utils/sanitize';
+import { deleteOwnedPost } from './postCleanup';
 
 export type GalleryEntry = { id: string; imageUri: string; note: string; createdAt: string; isPublic: boolean };
-type GalleryRow = { id: string; imageUri: string; note: string; createdAt: string; is_public: number };
-const photoDirectory = new Directory(Paths.document, 'outfit-gallery');
-
-function deleteManagedPhoto(imageUri: string): void {
-  const managedDirectory = `${photoDirectory.uri.replace(/\/$/, '')}/`;
-  if (!imageUri.startsWith(managedDirectory)) return;
-  try {
-    const photo = new File(imageUri);
-    if (photo.exists) photo.delete();
-  } catch { /* The database remains the source of truth. */ }
-}
+type GalleryDoc = { userId: string; kind: 'gallery'; imageUri: string; storageKey: string; title: string; createdAt: string; isPublic: boolean };
 
 export async function getGalleryEntries(userId: string): Promise<GalleryEntry[]> {
-  const db = await getDB();
-  const rows = await db.getAllAsync<GalleryRow>(
-    'SELECT id, imageUri, note, createdAt, is_public FROM gallery WHERE user_id = ? ORDER BY createdAt DESC, rowid DESC', userId,
-  );
-  return rows.map(({ is_public, ...row }) => ({ ...row, note: sanitizeUserText(row.note, 160), isPublic: is_public === 1 }));
+  const result = await getDocs(query(collection(firestore, 'posts'), where('userId', '==', userId)));
+  return result.docs
+    .filter((snapshot) => snapshot.data().kind === 'gallery')
+    .map((snapshot) => ({ id: snapshot.id, imageUri: snapshot.data().imageUri, note: sanitizeUserText(snapshot.data().title ?? '', 160), createdAt: snapshot.data().createdAt, isPublic: snapshot.data().isPublic === true }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function addGalleryEntry(userId: string, sourceUri: string, note: string): Promise<GalleryEntry> {
-  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  const source = new File(sourceUri);
-  const extension = source.extension.toLowerCase();
-  const safeExtension = /^\.(jpg|jpeg|png|heic|heif|webp)$/.test(extension) ? extension : '.jpg';
-  const destination = new File(photoDirectory, `${id}${safeExtension}`);
-  photoDirectory.create({ idempotent: true, intermediates: true });
+  const user = await getDoc(doc(firestore, 'users', userId));
+  if (!user.exists()) throw new Error('Kullanıcı bulunamadı.');
+  const ref = doc(collection(firestore, 'posts'));
+  const upload = await uploadImageToR2(userId, 'gallery', sourceUri);
+  const data: GalleryDoc = {
+    userId,
+    kind: 'gallery',
+    imageUri: upload.url,
+    storageKey: upload.key,
+    title: sanitizeUserText(note, 160),
+    createdAt: new Date().toISOString(),
+    isPublic: user.data().shareGallery !== false,
+  };
   try {
-    await source.copy(destination);
-    const entry: GalleryEntry = { id, imageUri: destination.uri, note: sanitizeUserText(note, 160), createdAt: new Date().toISOString(), isPublic: false };
-    const db = await getDB();
-    const result = await db.runAsync(
-      'INSERT INTO gallery (id, user_id, imageUri, note, createdAt, is_public) SELECT ?, id, ?, ?, ?, share_gallery FROM users WHERE id = ?',
-      entry.id, entry.imageUri, entry.note, entry.createdAt, userId,
-    );
-    if (result.changes !== 1) throw new Error('Kullanıcı bulunamadı.');
-    const setting = await db.getFirstAsync<{ share_gallery: number }>('SELECT share_gallery FROM users WHERE id = ?', userId);
-    entry.isPublic = setting?.share_gallery === 1;
-    return entry;
+    await setDoc(ref, data);
+    return { id: ref.id, imageUri: data.imageUri, note: data.title, createdAt: data.createdAt, isPublic: data.isPublic };
   } catch (error) {
-    try { if (destination.exists) destination.delete(); } catch { /* Keep original error. */ }
+    await deleteR2Object(upload.key).catch(() => undefined);
     throw error;
   }
 }
 
 export async function deleteGalleryEntry(userId: string, id: string): Promise<void> {
-  const db = await getDB();
-  const row = await db.getFirstAsync<{ imageUri: string }>(
-    'SELECT imageUri FROM gallery WHERE id = ? AND user_id = ?', id, userId,
-  );
-  if (!row) throw new Error('Fotoğraf bulunamadı.');
-  await db.withExclusiveTransactionAsync(async (tx) => {
-    await tx.runAsync("DELETE FROM likes WHERE post_type = 'gallery' AND post_id = ?", id);
-    await tx.runAsync("DELETE FROM comments WHERE post_type = 'gallery' AND post_id = ?", id);
-    const result = await tx.runAsync('DELETE FROM gallery WHERE id = ? AND user_id = ?', id, userId);
-    if (result.changes !== 1) throw new Error('Fotoğraf bulunamadı.');
-  });
-  deleteManagedPhoto(row.imageUri);
-}
-
-export function deleteGalleryPhotos(entries: GalleryEntry[]): void {
-  entries.forEach(({ imageUri }) => deleteManagedPhoto(imageUri));
+  const ref = doc(firestore, 'posts', id);
+  const snapshot = await getDoc(ref);
+  if (!snapshot.exists() || snapshot.data().userId !== userId || snapshot.data().kind !== 'gallery') throw new Error('Fotoğraf bulunamadı.');
+  await deleteOwnedPost(userId, id, 'gallery');
+  await deleteR2Object(snapshot.data().storageKey).catch(() => undefined);
 }

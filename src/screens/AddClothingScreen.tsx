@@ -9,7 +9,8 @@ import { ScreenFrame } from '../components/ScreenFrame';
 import { addClothingItem, type ClothingTags } from '../data/wardrobe';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { analyzeClothing } from '../services/analyzeClothing';
-import { RateLimitError } from '../services/rateLimiter';
+import type { ImageUploadMetadata } from '../services/r2Storage';
+import { RateLimitError } from '../services/workerApi';
 import { colors, fonts } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AddClothing'>;
@@ -17,6 +18,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'AddClothing'>;
 export function AddClothingScreen({ navigation }: Props) {
   const userId = useUserId();
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [uploadMetadata, setUploadMetadata] = useState<ImageUploadMetadata>({});
   const [tags, setTags] = useState<ClothingTags | null>(null);
   const [isPicking, setIsPicking] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -49,8 +51,10 @@ export function AddClothingScreen({ navigation }: Props) {
         setAnalysisFailed(true);
         if (error instanceof RateLimitError) {
           Alert.alert(error.reason === 'daily' ? 'Günlük ilham sınırı' : 'Biraz yavaşlayalım', error.message);
+        } else if (error instanceof Error && error.name === 'AbortError') {
+          Alert.alert('Analiz zaman aşımına uğradı', 'Bağlantı yavaş görünüyor. Lütfen tekrar dene.');
         } else {
-          Alert.alert('Analiz başarısız', 'Görsel analiz edilemedi, lütfen tekrar deneyin');
+          Alert.alert('Analiz başarısız', error instanceof Error ? error.message : 'Görsel analiz edilemedi, lütfen tekrar deneyin');
         }
       }
     } finally {
@@ -76,8 +80,14 @@ export function AddClothingScreen({ navigation }: Props) {
       if (!result.canceled && result.assets[0]?.uri) {
         const asset = result.assets[0];
         setImageUri(asset.uri);
+        setUploadMetadata({ fileName: asset.fileName, mimeType: asset.mimeType, fileSize: asset.fileSize });
         base64Ref.current = asset.base64 ?? null;
-        void runAnalysis(asset.base64 ?? '');
+        if (asset.base64) {
+          void runAnalysis(asset.base64);
+        } else {
+          setAnalysisFailed(true);
+          Alert.alert('Fotoğraf okunamadı', 'Seçilen fotoğrafın analiz verisi hazırlanamadı. Lütfen başka bir fotoğraf seç.');
+        }
       }
     } catch {
       Alert.alert(
@@ -85,7 +95,7 @@ export function AddClothingScreen({ navigation }: Props) {
         'Fotoğraf seçimi başarısız oldu. Uygulamanın fotoğraf erişimini ayarlardan kontrol edebilirsin.',
         [
           { text: 'Tamam', style: 'cancel' },
-          { text: 'Ayarları Aç', onPress: () => { void Linking.openSettings(); } },
+          { text: 'Ayarları Aç', onPress: () => { void Linking.openSettings().catch(() => Alert.alert('Ayarlar açılamadı', 'Cihaz ayarlarını elle açabilirsin.')); } },
         ],
       );
     } finally {
@@ -97,10 +107,10 @@ export function AddClothingScreen({ navigation }: Props) {
     if (!imageUri || !tags || isAnalyzing || isSaving) return;
     setIsSaving(true);
     try {
-      await addClothingItem(userId, imageUri, tags);
+      await addClothingItem(userId, imageUri, tags, uploadMetadata);
       navigation.goBack();
-    } catch {
-      Alert.alert('Kaydedilemedi', 'Kıyafet kaydedilirken bir sorun oluştu. Lütfen tekrar dene.');
+    } catch (error) {
+      Alert.alert('Kaydedilemedi', error instanceof Error ? error.message : 'Kıyafet kaydedilirken bir sorun oluştu. Lütfen tekrar dene.');
     } finally {
       setIsSaving(false);
     }
@@ -158,8 +168,11 @@ export function AddClothingScreen({ navigation }: Props) {
             { label: 'Tür', value: tags?.tur ?? '—' },
             { label: 'Renk', value: tags?.renk ?? '—' },
             { label: 'Desen', value: tags?.desen ?? '—' },
+            { label: 'Kesim', value: tags?.kesim ?? '—' },
+            { label: 'Parça', value: tags?.altTur ?? '—' },
+            { label: 'Kemer', value: tags?.tur === 'alt' ? (tags.kemerUygun ? 'Uygun' : 'Uygun değil') : '—' },
           ].map((tag, index) => (
-            <View key={tag.label} style={[styles.tagRow, index < 2 && styles.tagRowBorder]}>
+            <View key={tag.label} style={[styles.tagRow, index < 5 && styles.tagRowBorder]}>
               <Text style={styles.tagLabel}>{tag.label}</Text>
               <Text style={styles.tagValue}>{tag.value}</Text>
             </View>

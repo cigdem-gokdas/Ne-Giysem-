@@ -1,27 +1,34 @@
-import { OPENAI_API_KEY } from '../config/env';
 import { buildWardrobeSummary, hasAvailableMainPiece, isMainClothingType, type OutfitHistoryEntry, type WardrobeSummaryItem } from '../data/outfitHistory';
 import type { ClothingItem } from '../data/wardrobe';
-import { withApiRateLimit } from './rateLimiter';
+import { workerPost } from './workerApi';
 
-const ENDPOINT = 'https://api.openai.com/v1/chat/completions';
-const MODEL = 'gpt-5.6-luna';
-const SYSTEM_PROMPT = `Sen samimi, Türkçe konuşan bir stil danışmanısın. Kullanıcının planına göre yalnızca verilen gardırop ID'lerinden baştan aşağı uyumlu bir kombin seç. En az bir ana kıyafet ve varsa uyumlu bir ayakkabı veya aksesuar ekle.
-1. Listedeki son_kullanim değerlerine dikkat et. Ana kıyafet (üst, alt, dış giyim) son 5 kombin içinde kullanılmışsa (son_kullanim < 5) onu yeni parça olarak SEÇME. Değişim isteğinde aynen korunacak son kombin ID'leri bu kuraldan muaftır. "hic" hiç kullanılmadı demektir; 0 en son kombindir.
-2. Ayakkabı ve aksesuarlar (çanta, kemer, şal vb.) bu soğuma kuralından MUAFTIR; uyum için tekrar seçebilirsin.
-3. Dark Academia, Koyu Kış (Deep Winter) paleti (lacivert, bordo, zümrüt yeşili) ve vintage dokulara odaklan. Mary Jane/kalın topuklu ayakkabılar ile geniş paça veya uzun elbiselerin estetik bütünlüğünü gözet.
-Cevabını sadece şu JSON formatında ver:
-{
-  "mesaj": "[Kombinin neden uygun olduğunu anlatan samimi, 1-2 cümlelik Türkçe stil yorumu]",
-  "secilen_idler": ["seçilen_id_1", "seçilen_id_2"]
-}
-Asla markdown veya fazladan metin yazma, sadece saf JSON dön.`;
 const REPLACEMENT_RULE = 'Kullanıcı önerdiğin son kombindeki bir parçayı değiştirmek istiyor. Gardıroptan sadece o parçanın yerine geçecek YENİ bir eşya seç. Kombinin geri kalan parçalarını (ID\'lerini) AYNEN KORU ve sadece yeni eklediğin parçayla birlikte tam listeyi tekrar dön.';
+const SHOE_TYPE = 'ayakkabı';
 
 export type OutfitRecommendation = { mesaj: string; secilen_idler: string[] };
 export type ReplacementRequest = { previousIds: string[]; replaceId: string };
 
 export function isReplacementRequest(prompt: string): boolean {
   return /(kirli|kirlen|lekeli|yıkanmamış|yikanmamis|giyem|müsait değil|musait degil|değiştir|degistir|alternatif|yerine|olmasın|olmasin)/i.test(prompt);
+}
+
+function normalizedType(type: string): string {
+  return type.trim().toLocaleLowerCase('tr-TR');
+}
+
+export function buildRotationPool(summary: WardrobeSummaryItem[]): WardrobeSummaryItem[] {
+  return summary
+    .filter((item) => {
+      if (isMainClothingType(item.tur)) return item.son_kullanim === 'hic' || item.son_kullanim >= 5;
+      if (normalizedType(item.tur) === SHOE_TYPE) return item.son_kullanim !== 0;
+      return true;
+    })
+    .sort((left, right) => {
+      if (left.kullanim_sayisi !== right.kullanim_sayisi) return left.kullanim_sayisi - right.kullanim_sayisi;
+      const leftRecency = left.son_kullanim === 'hic' ? Number.MAX_SAFE_INTEGER : left.son_kullanim;
+      const rightRecency = right.son_kullanim === 'hic' ? Number.MAX_SAFE_INTEGER : right.son_kullanim;
+      return rightRecency - leftRecency;
+    });
 }
 
 export function getReplacementCandidates(
@@ -46,32 +53,24 @@ export function getReplacementCandidates(
   });
 }
 
-type CompletionResponse = {
-  choices?: Array<{
-    finish_reason?: string;
-    message?: { content?: string | null; refusal?: string | null };
-  }>;
-};
-
 function parseRecommendation(
-  content: string,
+  value: unknown,
   wardrobe: ClothingItem[],
   summary: WardrobeSummaryItem[],
   replacement?: ReplacementRequest,
   replacementCandidates: ClothingItem[] = [],
 ): OutfitRecommendation {
-  const value: unknown = JSON.parse(content);
-  if (!value || typeof value !== 'object') throw new Error('Invalid outfit response');
+  if (!value || typeof value !== 'object') throw new Error('Stil servisi geçersiz bir kombin yanıtı döndürdü.');
   const result = value as Partial<OutfitRecommendation>;
   const knownIds = new Set(wardrobe.map((item) => item.id));
   if (
     typeof result.mesaj !== 'string' || !result.mesaj.trim()
     || !Array.isArray(result.secilen_idler)
-    || result.secilen_idler.length < 2
+    || result.secilen_idler.length < 1
     || !result.secilen_idler.every((id) => typeof id === 'string' && knownIds.has(id))
     || new Set(result.secilen_idler).size !== result.secilen_idler.length
   ) {
-    throw new Error('Invalid outfit response');
+    throw new Error('Stil servisi gardıropta bulunmayan veya eksik parçalar döndürdü.');
   }
   if (replacement) {
     const previous = new Set(replacement.previousIds);
@@ -85,7 +84,7 @@ function parseRecommendation(
       || newIds.length !== 1
       || !candidateIds.has(newIds[0])
     ) {
-      throw new Error('Invalid replacement response');
+      throw new Error('Stil servisi yalnızca değiştirilecek parçayı yenileme kuralına uymadı.');
     }
     return {
       mesaj: result.mesaj.trim(),
@@ -97,7 +96,7 @@ function parseRecommendation(
     !selectedSummary.some((item) => isMainClothingType(item.tur))
     || selectedSummary.some((item) => isMainClothingType(item.tur) && typeof item.son_kullanim === 'number' && item.son_kullanim < 5)
   ) {
-    throw new Error('Outfit violates cooldown');
+    throw new Error('Stil servisi yakın zamanda kullanılan bir ana parçayı tekrar seçti.');
   }
   return { mesaj: result.mesaj.trim(), secilen_idler: result.secilen_idler };
 }
@@ -110,72 +109,31 @@ export async function recommendOutfit(
   signal?: AbortSignal,
   replacement?: ReplacementRequest,
 ): Promise<OutfitRecommendation> {
-  if (!OPENAI_API_KEY) throw new Error('Missing OpenAI API key');
-  if (wardrobe.length < 2 || !prompt.trim()) throw new Error('Insufficient outfit input');
+  if (wardrobe.length < 2) throw new Error('Kombin oluşturmak için gardırobunda en az iki parça olmalı.');
+  if (!prompt.trim()) throw new Error('Nereye gideceğini veya nasıl bir kombin istediğini yaz.');
 
   const wardrobeSummary = buildWardrobeSummary(wardrobe, history);
   let replacementCandidates: ClothingItem[] = [];
   if (replacement) {
     if (
-      replacement.previousIds.length < 2
+      replacement.previousIds.length < 1
       || new Set(replacement.previousIds).size !== replacement.previousIds.length
       || !replacement.previousIds.every((id) => wardrobe.some((item) => item.id === id))
-    ) throw new Error('Invalid previous outfit');
+    ) throw new Error('Değiştirilecek önceki kombin bulunamadı.');
     replacementCandidates = getReplacementCandidates(wardrobe, history, replacement);
-    if (replacementCandidates.length === 0) throw new Error('No replacement available');
+    if (replacementCandidates.length === 0) throw new Error('Bu parçanın yerine geçebilecek, rotasyon kuralına uygun başka bir parça yok.');
   } else if (!hasAvailableMainPiece(wardrobeSummary)) {
-    throw new Error('No main piece available after cooldown');
+    throw new Error('Ana parçaların son beş kombinde kullanılmış. Yeni bir ana parça ekleyebilir veya geçmiş rotasyonunun dolmasını bekleyebilirsin.');
   }
   const candidateIds = new Set(replacementCandidates.map((item) => item.id));
   const sentSummary = replacement
     ? wardrobeSummary.filter((item) => replacement.previousIds.includes(item.id) || candidateIds.has(item.id))
-    : wardrobeSummary;
+    : buildRotationPool(wardrobeSummary);
+  if (!replacement && sentSummary.length < 2) throw new Error('Aynı parçaları tekrarlamadan kombin kurmak için yeterli uygun parça yok.');
   const userMessage = replacement
     ? `${prompt.trim()}\nSon kombin ID'leri: ${JSON.stringify(replacement.previousIds)}. Değişecek ID: ${replacement.replaceId}. Aynen korunacak ID'ler: ${JSON.stringify(replacement.previousIds.filter((id) => id !== replacement.replaceId))}.\n${REPLACEMENT_RULE}`
     : prompt.trim();
 
-  const response = await withApiRateLimit(userId, async () => {
-    const response = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      signal,
-      body: JSON.stringify({
-        model: MODEL,
-        max_completion_tokens: 240,
-        store: false,
-        messages: [
-          { role: 'system', content: `${SYSTEM_PROMPT}\nGardırop: ${JSON.stringify(sentSummary)}` },
-          { role: 'user', content: userMessage },
-        ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'outfit_recommendation',
-            strict: true,
-            schema: {
-              type: 'object',
-              properties: {
-                mesaj: { type: 'string' },
-                secilen_idler: { type: 'array', items: { type: 'string' } },
-              },
-              required: ['mesaj', 'secilen_idler'],
-              additionalProperties: false,
-            },
-          },
-        },
-      }),
-    });
-
-    if (!response.ok) throw new Error(`OpenAI request failed: ${response.status}`);
-    return response;
-  });
-  const result = (await response.json()) as CompletionResponse;
-  const choice = result.choices?.[0];
-  if (choice?.finish_reason !== 'stop' || choice.message?.refusal || !choice.message?.content) {
-    throw new Error('OpenAI returned no complete outfit');
-  }
-  return parseRecommendation(choice.message.content, wardrobe, wardrobeSummary, replacement, replacementCandidates);
+  const result = await workerPost<{ recommendation: unknown }>(userId, '/generate-outfit', { wardrobe: sentSummary, message: userMessage }, signal);
+  return parseRecommendation(result.recommendation, wardrobe, wardrobeSummary, replacement, replacementCandidates);
 }

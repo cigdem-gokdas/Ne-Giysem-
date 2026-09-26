@@ -8,13 +8,13 @@ import { MessageBubble } from '../components/MessageBubble';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
-import { appendChatMessage, getChatSessions, type ChatSession } from '../data/chatSessions';
+import { appendChatMessage, clearChatSessions, deleteChatSession, getChatSessions, type ChatSession } from '../data/chatSessions';
 import { createMoodBoard } from '../data/moodBoards';
 import { buildWardrobeSummary, getOutfitHistory, hasAvailableMainPiece, saveOutfitHistoryEntry, type OutfitHistoryEntry } from '../data/outfitHistory';
 import { getClothingItems, type ClothingItem } from '../data/wardrobe';
 import type { MainTabParamList } from '../navigation/AppNavigator';
 import { getReplacementCandidates, isReplacementRequest, recommendOutfit, type ReplacementRequest } from '../services/recommendOutfit';
-import { RateLimitError } from '../services/rateLimiter';
+import { RateLimitError } from '../services/workerApi';
 import { colors, fonts } from '../theme';
 
 type ChatMessage =
@@ -74,10 +74,12 @@ export function OutfitChatScreen() {
   const [pendingReplacement, setPendingReplacement] = useState<PendingReplacement | null>(null);
   const [savingBoardId, setSavingBoardId] = useState<string | null>(null);
   const [savedBoardIds, setSavedBoardIds] = useState<Set<string>>(() => new Set());
+  const [deletingChats, setDeletingChats] = useState(false);
   const historyRef = useRef<OutfitHistoryEntry[]>([]);
   const sendingRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const chatMutationRef = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -85,8 +87,9 @@ export function OutfitChatScreen() {
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
+      drawerX.stopAnimation();
     };
-  }, []);
+  }, [drawerX]);
 
   useEffect(() => {
     if (drawerVisible) Animated.timing(drawerX, { toValue: 0, duration: 240, useNativeDriver: true }).start();
@@ -94,13 +97,14 @@ export function OutfitChatScreen() {
 
   function closeDrawer(afterClose?: () => void) {
     Animated.timing(drawerX, { toValue: -drawerWidth, duration: 220, useNativeDriver: true }).start(({ finished }) => {
-      if (!finished) return;
+      if (!finished || !mountedRef.current) return;
       setDrawerVisible(false);
       afterClose?.();
     });
   }
 
   function chooseSession(sessionId: string | null) {
+    if (deletingChats || isSending) return;
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
     setMessages(messagesFromSession(sessions.find((session) => session.id === sessionId), wardrobe));
@@ -110,14 +114,70 @@ export function OutfitChatScreen() {
     closeDrawer();
   }
 
+  function resetConversation(nextSessions: ChatSession[]) {
+    const next = nextSessions[0];
+    activeSessionIdRef.current = next?.id ?? null;
+    setActiveSessionId(next?.id ?? null);
+    setSessions(nextSessions);
+    setMessages(messagesFromSession(next, wardrobe));
+    setDraft('');
+    setFailedRequest(null);
+    setPendingReplacement(null);
+  }
+
+  function confirmClearChats() {
+    if (isSending || deletingChats || sessions.length === 0) return;
+    Alert.alert('Sohbet geçmişi silinsin mi?', 'Tüm eski sohbetlerin silinecek. Bu işlem geri alınamaz.', [
+      { text: 'Vazgeç', style: 'cancel' },
+      { text: 'Temizle', style: 'destructive', onPress: () => { void clearChats(); } },
+    ]);
+  }
+
+  async function clearChats() {
+    if (isSending || deletingChats) return;
+    setDeletingChats(true);
+    chatMutationRef.current += 1;
+    resetConversation([]);
+    try {
+      await clearChatSessions(userId);
+    } catch (error) {
+      Alert.alert('Sohbetler silinemedi', error instanceof Error ? error.message : 'Lütfen tekrar dene.');
+      setReloadKey((value) => value + 1);
+    } finally { if (mountedRef.current) setDeletingChats(false); }
+  }
+
+  function confirmDeleteSession(session: ChatSession) {
+    if (isSending || deletingChats) return;
+    Alert.alert('Sohbet silinsin mi?', `“${session.title}” sohbeti kalıcı olarak silinecek.`, [
+      { text: 'Vazgeç', style: 'cancel' },
+      { text: 'Sil', style: 'destructive', onPress: () => { void removeSession(session.id); } },
+    ]);
+  }
+
+  async function removeSession(sessionId: string) {
+    if (isSending || deletingChats) return;
+    setDeletingChats(true);
+    chatMutationRef.current += 1;
+    const remaining = sessions.filter((session) => session.id !== sessionId);
+    if (activeSessionIdRef.current === sessionId) resetConversation(remaining);
+    else setSessions(remaining);
+    try {
+      await deleteChatSession(userId, sessionId);
+    } catch (error) {
+      Alert.alert('Sohbet silinemedi', error instanceof Error ? error.message : 'Lütfen tekrar dene.');
+      setReloadKey((value) => value + 1);
+    } finally { if (mountedRef.current) setDeletingChats(false); }
+  }
+
   useEffect(() => {
     if (!isFocused) return;
     let active = true;
+    const mutation = chatMutationRef.current;
     setIsLoadingWardrobe(true);
     setLoadError(false);
     Promise.all([getClothingItems(userId), getOutfitHistory(userId), getChatSessions(userId)])
       .then(([items, savedHistory, savedSessions]) => {
-        if (active) {
+        if (active && mutation === chatMutationRef.current) {
           setWardrobe(items);
           setHistory(savedHistory);
           historyRef.current = savedHistory;
@@ -148,7 +208,7 @@ export function OutfitChatScreen() {
   const canChangeLast = !!lastOutfit && lastOutfit.selectedIds.some((id) =>
     getReplacementCandidates(wardrobe, history, { previousIds: lastOutfit.selectedIds, replaceId: id }).length > 0);
   const canCompose = wardrobe.length >= 2 && (hasAvailableMain || canChangeLast);
-  const canSend = !isLoadingWardrobe && !loadError && canCompose && !isSending && draft.trim().length > 0;
+  const canSend = !isLoadingWardrobe && !loadError && canCompose && !isSending && !deletingChats && draft.trim().length > 0;
 
   async function saveAssistantBoard(message: Extract<ChatMessage, { role: 'assistant' }>) {
     if (savingBoardId || savedBoardIds.has(message.id)) return;
@@ -166,7 +226,7 @@ export function OutfitChatScreen() {
 
   async function sendMessage(text: string, appendUser = true, replacement?: ReplacementRequest) {
     const prompt = text.trim();
-    if (!prompt || sendingRef.current || isLoadingWardrobe || loadError || wardrobe.length < 2) return;
+    if (!prompt || sendingRef.current || deletingChats || isLoadingWardrobe || loadError || wardrobe.length < 2) return;
 
     let exchange = replacement;
     if (!exchange && isReplacementRequest(prompt) && lastOutfit) {
@@ -265,7 +325,7 @@ export function OutfitChatScreen() {
           if (error instanceof RateLimitError) {
             Alert.alert(error.reason === 'daily' ? 'Günlük ilham sınırı' : 'Biraz yavaşlayalım', error.message);
           } else {
-            Alert.alert('Bir sorun oldu', 'Kombin önerisi alınamadı, lütfen tekrar dene.');
+            Alert.alert('Kombin oluşturulamadı', error instanceof Error ? error.message : 'Kombin önerisi alınamadı, lütfen tekrar dene.');
           }
         }
       }
@@ -280,7 +340,7 @@ export function OutfitChatScreen() {
   return (
     <ScreenFrame>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
-        <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} centerTitle showNotifications />
+        <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} onClearPress={sessions.length > 0 && !deletingChats && !isSending ? confirmClearChats : undefined} centerTitle showNotifications />
         {isLoadingWardrobe ? (
           <View style={styles.centerState}><ActivityIndicator color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
         ) : loadError ? (
@@ -352,7 +412,7 @@ export function OutfitChatScreen() {
               maxLength={280}
               returnKeyType="send"
               onSubmitEditing={() => sendMessage(draft)}
-              editable={!isLoadingWardrobe && !loadError && canCompose && !isSending}
+              editable={!isLoadingWardrobe && !loadError && canCompose && !isSending && !deletingChats}
               accessibilityLabel="Kombin isteğini yaz"
             />
             <Pressable style={[styles.sendButton, !canSend && styles.sendDisabled]} onPress={() => sendMessage(draft)} disabled={!canSend} accessibilityRole="button" accessibilityLabel="Mesajı gönder">
@@ -405,20 +465,21 @@ export function OutfitChatScreen() {
           <Animated.View style={[styles.drawer, { width: drawerWidth, paddingTop: insets.top + 22, paddingBottom: insets.bottom + 18, transform: [{ translateX: drawerX }] }]}>
             <Text style={styles.drawerEyebrow}>NE GİYSEM?  /  SOHBETLER</Text>
             <Text style={styles.drawerTitle}>Stil defterin</Text>
-            <Pressable style={styles.newChatButton} onPress={() => chooseSession(null)} disabled={isSending} accessibilityRole="button" accessibilityLabel="Yeni sohbet başlat">
+            <Pressable style={styles.newChatButton} onPress={() => chooseSession(null)} disabled={isSending || deletingChats} accessibilityRole="button" accessibilityLabel="Yeni sohbet başlat">
               <Feather name="plus" size={19} color={colors.ink} /><Text style={styles.newChatText}>Yeni Sohbet</Text>
             </Pressable>
             <Text style={styles.drawerSection}>ÖNCEKİ SOHBETLER</Text>
             <ScrollView style={styles.sessionScroll} showsVerticalScrollIndicator={false}>
               {sessions.length === 0 && <Text style={styles.noSessions}>İlk sohbetin burada görünecek.</Text>}
               {sessions.map((session) => (
-                <Pressable key={session.id} style={[styles.sessionRow, session.id === activeSessionId && styles.activeSession]} onPress={() => chooseSession(session.id)} disabled={isSending} accessibilityRole="button" accessibilityLabel={`${session.title} sohbetini aç`}>
+                <Pressable key={session.id} style={[styles.sessionRow, session.id === activeSessionId && styles.activeSession]} onPress={() => chooseSession(session.id)} disabled={isSending || deletingChats} accessibilityRole="button" accessibilityLabel={`${session.title} sohbetini aç`}>
                   <Feather name="message-circle" size={17} color={session.id === activeSessionId ? colors.pink : colors.sage} />
                   <View style={styles.sessionText}><Text style={[styles.sessionTitle, session.id === activeSessionId && styles.activeSessionTitle]} numberOfLines={1}>{session.title}</Text><Text style={styles.sessionDate}>{new Date(session.createdAt).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' })}</Text></View>
+                  <Pressable style={styles.sessionDelete} onPress={(event) => { event.stopPropagation(); confirmDeleteSession(session); }} disabled={isSending || deletingChats} accessibilityRole="button" accessibilityLabel={`${session.title} sohbetini sil`}><Feather name="trash-2" size={16} color={colors.pink} /></Pressable>
                 </Pressable>
               ))}
             </ScrollView>
-            <Text style={styles.drawerFooter}>Her sohbet bu cihazda saklanır.</Text>
+            <Text style={styles.drawerFooter}>Sohbetlerin hesabına bağlı bulut alanında saklanır.</Text>
           </Animated.View>
         </View>
       </Modal>
@@ -479,6 +540,7 @@ const styles = StyleSheet.create({
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13, borderRadius: 12, borderWidth: 1, borderColor: 'transparent', marginBottom: 7 },
   activeSession: { backgroundColor: colors.surfaceLight, borderColor: colors.pinkDeep },
   sessionText: { flex: 1 },
+  sessionDelete: { width: 34, height: 34, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   sessionTitle: { color: colors.textMuted, fontFamily: fonts.sans, fontSize: 13, fontWeight: '600' },
   activeSessionTitle: { color: colors.pink },
   sessionDate: { color: colors.textFaint, fontFamily: fonts.sans, fontSize: 10, marginTop: 4 },

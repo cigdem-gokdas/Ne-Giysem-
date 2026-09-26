@@ -11,7 +11,6 @@ import { getModerationReports, type ModerationReport } from '../data/interaction
 import { resetLocalData } from '../data/wardrobe';
 import { changePassword } from '../data/auth';
 import type { RootStackParamList } from '../navigation/AppNavigator';
-import { exportBackup, importBackup, type BackupProgress } from '../services/backup';
 import { colors, fonts } from '../theme';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
@@ -37,8 +36,6 @@ export function SettingsScreen() {
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deletingAccount, setDeletingAccount] = useState(false);
-  const [backupMode, setBackupMode] = useState<'export' | 'import' | null>(null);
-  const [backupProgress, setBackupProgress] = useState<BackupProgress>({ label: '', progress: 0 });
 
   useEffect(() => {
     let active = true;
@@ -93,7 +90,7 @@ export function SettingsScreen() {
         { text: 'Tamam', onPress: () => navigation.goBack() },
       ]);
     } catch {
-      Alert.alert('Sıfırlanamadı', 'Yerel veriler temizlenemedi. Lütfen tekrar dene.');
+      Alert.alert('Sıfırlanamadı', 'Bulut verileri temizlenemedi. Lütfen tekrar dene.');
     } finally {
       setIsResetting(false);
     }
@@ -130,6 +127,11 @@ export function SettingsScreen() {
     }
   }
 
+  async function handleLogout() {
+    try { await logout(); }
+    catch (cause) { Alert.alert('Çıkış yapılamadı', cause instanceof Error ? cause.message : 'Lütfen tekrar dene.'); }
+  }
+
   function confirmAccountDeletion() {
     if (deleteConfirmation.trim().toLocaleUpperCase('tr-TR') !== 'SİL') {
       setDeleteError('Devam etmek için onay alanına SİL yazmalısın.');
@@ -145,50 +147,6 @@ export function SettingsScreen() {
       [
         { text: 'Vazgeç', style: 'cancel' },
         { text: 'Hesabı Sil', style: 'destructive', onPress: () => { void performAccountDeletion(); } },
-      ],
-    );
-  }
-
-  async function performBackup() {
-    if (backupMode) return;
-    setBackupMode('export');
-    setBackupProgress({ label: 'Yedek hazırlanıyor…', progress: 0 });
-    try {
-      await exportBackup(setBackupProgress);
-    } catch (cause) {
-      Alert.alert('Yedek oluşturulamadı', cause instanceof Error ? cause.message : 'Lütfen tekrar dene.');
-    } finally {
-      setBackupMode(null);
-    }
-  }
-
-  async function performRestore() {
-    if (backupMode) return;
-    setBackupMode('import');
-    setBackupProgress({ label: 'Yedek seçiliyor…', progress: 0 });
-    try {
-      const result = await importBackup(setBackupProgress);
-      if (result === 'cancelled') return;
-      Alert.alert(
-        'Verileriniz başarıyla geri yüklendi',
-        'Yeni verilerin güvenle açılması için oturumun kapatılacak. Geri yüklenen hesabınla yeniden giriş yapabilirsin.',
-        [{ text: 'Tamam', onPress: () => { void logout(); } }],
-      );
-    } catch (cause) {
-      Alert.alert('Yedek geri yüklenemedi', cause instanceof Error ? cause.message : 'Dosya bozuk olabilir. Lütfen başka bir yedek seç.');
-    } finally {
-      setBackupMode(null);
-    }
-  }
-
-  function confirmRestore() {
-    if (backupMode) return;
-    Alert.alert(
-      'Yedekten geri yükle',
-      'Seçeceğin yedek, bu cihazdaki mevcut veritabanının ve fotoğrafların yerini alacak. Devam etmek istiyor musun?',
-      [
-        { text: 'Vazgeç', style: 'cancel' },
-        { text: 'Dosya Seç', onPress: () => { void performRestore(); } },
       ],
     );
   }
@@ -216,7 +174,7 @@ export function SettingsScreen() {
             <Text style={styles.cardTitle}>{user?.username}</Text>
             {user?.email && <Text style={styles.accountEmail}>{user.email}</Text>}
             <Pressable style={[styles.passwordButton, user?.authProvider === 'google' && styles.disabled]} onPress={openPasswordModal} disabled={user?.authProvider === 'google'} accessibilityRole="button" accessibilityLabel="Şifremi Değiştir"><Feather name="key" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{user?.authProvider === 'google' ? 'Şifre Google tarafından yönetiliyor' : 'Şifremi Değiştir'}</Text></Pressable>
-            <Pressable style={styles.logoutButton} onPress={() => { void logout(); }} accessibilityRole="button" accessibilityLabel="Çıkış Yap"><Feather name="log-out" size={15} color={colors.lavender} /><Text style={styles.logoutText}>Çıkış Yap</Text></Pressable>
+            <Pressable style={styles.logoutButton} onPress={() => { void handleLogout(); }} accessibilityRole="button" accessibilityLabel="Çıkış Yap"><Feather name="log-out" size={15} color={colors.lavender} /><Text style={styles.logoutText}>Çıkış Yap</Text></Pressable>
           </View>
         </View>
         {user?.role === 'admin' && <View style={styles.sectionCard}>
@@ -235,40 +193,20 @@ export function SettingsScreen() {
         </View>
 
         <View style={styles.sectionCard}>
-          <Text style={styles.overline}>YEREL VERİLER</Text>
+          <Text style={styles.overline}>BULUT VERİLERİ</Text>
           <Text style={styles.sectionTitle}>Küçük bir başlangıç</Text>
-          <Text style={styles.description}>Kıyafetlerin, sohbetlerin ve fotoğraf günlüğün bu cihazda saklanır. İstersen hepsini temizleyip yeniden başlayabilirsin.</Text>
-          <Pressable style={[styles.resetButton, isResetting && styles.disabled]} onPress={confirmReset} disabled={isResetting} accessibilityRole="button" accessibilityLabel="Tüm yerel verileri sıfırla">
+          <Text style={styles.description}>Kıyafetlerin, sohbetlerin ve fotoğraf günlüğün hesabına bağlı bulut alanında saklanır. İstersen hepsini temizleyip yeniden başlayabilirsin.</Text>
+          <Pressable style={[styles.resetButton, isResetting && styles.disabled]} onPress={confirmReset} disabled={isResetting} accessibilityRole="button" accessibilityLabel="Tüm verilerimi sıfırla">
             {isResetting ? <ActivityIndicator size="small" color={colors.pink} /> : <Feather name="trash-2" size={17} color={colors.pink} />}
             <Text style={styles.resetText}>{isResetting ? 'Temizleniyor...' : 'Tüm verileri sıfırla'}</Text>
           </Pressable>
-        </View>
-
-        <View style={styles.backupCard}>
-          <View style={styles.backupTitleRow}>
-            <View style={styles.backupIcon}><Feather name="archive" size={20} color={colors.sage} /></View>
-            <View style={styles.cardText}>
-              <Text style={styles.overline}>YEDEKLEME VE GERİ YÜKLEME</Text>
-              <Text style={styles.sectionTitle}>Gardırobunu yanında tut</Text>
-            </View>
-          </View>
-          <Text style={styles.description}>Veritabanın ile kıyafet, günlük ve profil fotoğrafların tek bir .negiysem dosyasında saklanır. Dosyayı iCloud, Google Drive veya Dosyalar'a kaydedebilirsin.</Text>
-          <Pressable style={[styles.backupPrimaryButton, backupMode !== null && styles.disabled]} onPress={() => { void performBackup(); }} disabled={backupMode !== null} accessibilityRole="button" accessibilityLabel="Tüm Verilerimi Yedekle">
-            <Feather name="upload-cloud" size={17} color={colors.ink} />
-            <Text style={styles.backupPrimaryText}>Tüm Verilerimi Yedekle</Text>
-          </Pressable>
-          <Pressable style={[styles.backupSecondaryButton, backupMode !== null && styles.disabled]} onPress={confirmRestore} disabled={backupMode !== null} accessibilityRole="button" accessibilityLabel="Yedeklemeden Geri Yükle">
-            <Feather name="download-cloud" size={17} color={colors.lavender} />
-            <Text style={styles.backupSecondaryText}>Yedeklemeden Geri Yükle</Text>
-          </Pressable>
-          <Text style={styles.backupFootnote}>Yedek dosyası yalnızca senin seçtiğin konuma gider; hiçbir sunucuya yüklenmez.</Text>
         </View>
 
         <View style={styles.modelCard}>
           <View style={styles.modelIcon}><Feather name="star" size={19} color={colors.sage} /></View>
           <View style={styles.cardText}>
             <Text style={styles.overline}>KULLANILAN MODEL</Text>
-            <Text style={styles.modelName}>gpt-5.6-luna</Text>
+            <Text style={styles.modelName}>gpt-6-luna</Text>
             <Text style={styles.description}>Görsel etiketleme ve kombin önerileri</Text>
           </View>
         </View>
@@ -277,7 +215,7 @@ export function SettingsScreen() {
           <View style={styles.cardText}>
             <Text style={styles.overline}>HESAP YÖNETİMİ</Text>
             <Text style={styles.dangerTitle}>Hesabımı sil</Text>
-            <Text style={styles.description}>Hesabını ve bu hesaba ait tüm yerel verileri kalıcı olarak kaldırır.</Text>
+            <Text style={styles.description}>Hesabını ve bu hesaba ait tüm bulut verilerini kalıcı olarak kaldırır.</Text>
             <Pressable style={styles.deleteAccountButton} onPress={openDeleteModal} accessibilityRole="button" accessibilityLabel="Hesabımı kalıcı olarak sil"><Feather name="trash" size={15} color={colors.pink} /><Text style={styles.deleteAccountText}>Hesabımı Sil</Text></Pressable>
           </View>
         </View>
@@ -336,21 +274,6 @@ export function SettingsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-      <Modal visible={backupMode !== null} transparent animationType="fade" statusBarTranslucent onRequestClose={() => undefined}>
-        <View style={styles.progressOverlay} accessibilityViewIsModal>
-          <View style={styles.progressCard}>
-            <View style={styles.progressSeal}><Feather name={backupMode === 'import' ? 'download-cloud' : 'archive'} size={25} color={colors.sage} /></View>
-            <Text style={styles.progressOverline}>{backupMode === 'import' ? 'GERİ YÜKLENİYOR' : 'YEDEKLENİYOR'}</Text>
-            <Text style={styles.progressTitle}>{backupProgress.label}</Text>
-            <ActivityIndicator size="large" color={colors.lavender} style={styles.progressSpinner} />
-            {typeof backupProgress.progress === 'number' && <>
-              <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.max(0, Math.min(1, backupProgress.progress)) * 100}%` }]} /></View>
-              <Text style={styles.progressPercent}>{Math.round(Math.max(0, Math.min(1, backupProgress.progress)) * 100)}%</Text>
-            </>}
-            <Text style={styles.progressHint}>Fotoğraf sayısına göre bu işlem birkaç saniye sürebilir.</Text>
-          </View>
-        </View>
-      </Modal>
     </ScreenFrame>
   );
 }
@@ -379,14 +302,6 @@ const styles = StyleSheet.create({
   moderatorButtonText: { color: colors.ink, fontFamily: fonts.sans, fontSize: 12, fontWeight: '800' },
   resetButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 22, paddingHorizontal: 12, paddingVertical: 14, borderRadius: 11, borderWidth: 1, borderColor: colors.pinkDeep, backgroundColor: colors.backgroundRaised },
   resetText: { color: colors.pink, fontFamily: fonts.sans, fontSize: 13, fontWeight: '700' },
-  backupCard: { padding: 21, borderRadius: 17, borderWidth: 1, borderColor: colors.sage, backgroundColor: colors.surface },
-  backupTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 13 },
-  backupIcon: { width: 43, height: 43, borderRadius: 13, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.sage, alignItems: 'center', justifyContent: 'center' },
-  backupPrimaryButton: { minHeight: 48, marginTop: 20, borderRadius: 11, backgroundColor: colors.sage, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9 },
-  backupPrimaryText: { color: colors.ink, fontFamily: fonts.sans, fontSize: 12, fontWeight: '800' },
-  backupSecondaryButton: { minHeight: 48, marginTop: 10, borderRadius: 11, borderWidth: 1, borderColor: colors.lavender, backgroundColor: colors.backgroundRaised, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9 },
-  backupSecondaryText: { color: colors.lavender, fontFamily: fonts.sans, fontSize: 12, fontWeight: '800' },
-  backupFootnote: { color: colors.textFaint, fontFamily: fonts.sans, fontSize: 10, lineHeight: 16, marginTop: 13, textAlign: 'center' },
   dangerCard: { flexDirection: 'row', gap: 14, padding: 19, borderRadius: 17, borderWidth: 1, borderColor: colors.pinkDeep, backgroundColor: colors.surface },
   dangerIcon: { width: 43, height: 43, borderRadius: 13, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.pinkDeep, alignItems: 'center', justifyContent: 'center' },
   dangerTitle: { color: colors.pink, fontFamily: fonts.serif, fontSize: 23, marginTop: 5 },
@@ -421,14 +336,4 @@ const styles = StyleSheet.create({
   reportUsers: { color: colors.lavender, fontFamily: fonts.sans, fontSize: 11, fontWeight: '800' },
   reportReason: { color: colors.text, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18, marginTop: 5 },
   reportDate: { color: colors.gold, fontFamily: fonts.sans, fontSize: 9, marginTop: 5 },
-  progressOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30, backgroundColor: 'rgba(20, 12, 11, 0.88)' },
-  progressCard: { width: '100%', maxWidth: 360, alignItems: 'center', paddingHorizontal: 24, paddingVertical: 28, borderRadius: 22, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  progressSeal: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.sage, backgroundColor: colors.backgroundRaised, marginBottom: 16 },
-  progressOverline: { color: colors.gold, fontFamily: fonts.sans, fontSize: 9, letterSpacing: 1.7, fontWeight: '800' },
-  progressTitle: { color: colors.text, fontFamily: fonts.serif, fontSize: 21, lineHeight: 28, textAlign: 'center', marginTop: 8 },
-  progressSpinner: { marginVertical: 18 },
-  progressTrack: { width: '100%', height: 6, overflow: 'hidden', borderRadius: 3, backgroundColor: colors.backgroundRaised },
-  progressFill: { height: '100%', borderRadius: 3, backgroundColor: colors.lavender },
-  progressPercent: { color: colors.lavender, fontFamily: fonts.sans, fontSize: 10, fontWeight: '800', marginTop: 7 },
-  progressHint: { color: colors.textMuted, fontFamily: fonts.sans, fontSize: 11, lineHeight: 17, textAlign: 'center', marginTop: 12 },
 });

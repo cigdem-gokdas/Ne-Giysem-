@@ -109,7 +109,7 @@ export function DiscoverScreen() {
       await reportUser(userId, moderationPost.user.id, reportReason);
       setModerationPost(null);
       setReportReason('');
-      Alert.alert('Şikayetin alındı', 'Moderatör incelemesi için yerel kayıt oluşturuldu.');
+      Alert.alert('Şikayetin alındı', 'Moderatör incelemesi için güvenli kayıt oluşturuldu.');
     } catch (cause) {
       Alert.alert('Şikayet kaydedilemedi', cause instanceof Error ? cause.message : 'Lütfen tekrar dene.');
     }

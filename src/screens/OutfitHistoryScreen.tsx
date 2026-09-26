@@ -3,8 +3,8 @@ import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableWithoutFeedback, useWindowDimensions, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
 import { MoodBoardCollage } from '../components/MoodBoardCollage';
@@ -16,6 +16,7 @@ import { getClothingItems, type ClothingItem } from '../data/wardrobe';
 import { getPublicUser, updateAvatar, updateBio } from '../data/social';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
+import { sanitizeUserText } from '../utils/sanitize';
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -86,9 +87,19 @@ export function OutfitHistoryScreen() {
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [bio, setBio] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
+  const sourceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
   const columns = width >= 600 ? 3 : 2;
   const cardWidth = (width - 48 - 12 * (columns - 1)) / columns;
   const wardrobeById = new Map(wardrobe.map((item) => [item.id, item]));
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (sourceTimer.current) clearTimeout(sourceTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -113,25 +124,36 @@ export function OutfitHistoryScreen() {
   async function chooseAvatar() {
     if (savingProfile) return;
     setSavingProfile(true);
+    const previousUri = avatarUri;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.82 });
-      if (!result.canceled && result.assets[0]?.uri) setAvatarUri(await updateAvatar(userId, result.assets[0].uri));
-    } catch {
-      Alert.alert('Fotoğraf seçilemedi', 'Profil fotoğrafın güncellenemedi.');
-    } finally { setSavingProfile(false); }
+      const asset = result.assets?.[0];
+      if (!result.canceled && asset?.uri) {
+        if (mounted.current) setAvatarUri(asset.uri);
+        const publicUrl = await updateAvatar(userId, asset.uri, { fileName: asset.fileName, mimeType: asset.mimeType, fileSize: asset.fileSize });
+        if (mounted.current) setAvatarUri(publicUrl);
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setAvatarUri(previousUri);
+        Alert.alert('Fotoğraf güncellenemedi', error instanceof Error ? error.message : 'Lütfen tekrar dene.');
+      }
+    } finally { if (mounted.current) setSavingProfile(false); }
   }
 
   async function saveBio() {
+    Keyboard.dismiss();
     if (savingProfile) return;
     setSavingProfile(true);
     try {
       await updateBio(userId, bio);
-      const profile = await getPublicUser(userId);
-      setBio(profile?.bio ?? '');
-      Alert.alert('Kaydedildi', 'Biyografin güncellendi.');
-    } catch {
-      Alert.alert('Kaydedilemedi', 'Biyografin güncellenemedi.');
-    } finally { setSavingProfile(false); }
+      if (mounted.current) {
+        setBio(sanitizeUserText(bio, 160));
+        Alert.alert('Kaydedildi', 'Biyografin güncellendi.');
+      }
+    } catch (error) {
+      if (mounted.current) Alert.alert('Kaydedilemedi', error instanceof Error ? error.message : 'Biyografin güncellenemedi.');
+    } finally { if (mounted.current) setSavingProfile(false); }
   }
 
   function openBoardModal() {
@@ -199,7 +221,7 @@ export function OutfitHistoryScreen() {
         if (!permission.granted) {
           Alert.alert('Kamera izni gerekli', 'Kombin fotoğrafı çekebilmek için kamera izni vermelisin.', [
             { text: 'Vazgeç', style: 'cancel' },
-            { text: 'Ayarları aç', onPress: () => { void Linking.openSettings(); } },
+            { text: 'Ayarları aç', onPress: () => { void Linking.openSettings().catch(() => Alert.alert('Ayarlar açılamadı', 'Cihaz ayarlarını elle açabilirsin.')); } },
           ]);
           return;
         }
@@ -236,11 +258,14 @@ export function OutfitHistoryScreen() {
 
   function chooseSource(source: 'library' | 'camera') {
     setChoiceVisible(false);
-    setTimeout(() => { void pickPhoto(source); }, 280);
+    if (sourceTimer.current) clearTimeout(sourceTimer.current);
+    sourceTimer.current = setTimeout(() => { sourceTimer.current = null; if (mounted.current) void pickPhoto(source); }, 280);
   }
 
   return (
     <ScreenFrame>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View style={styles.content}>
       <ScreenHeading eyebrow="KİŞİSEL STİL DEFTERİN" title="Profilim" subtitle="Fotoğrafların, panoların ve sana ait küçük stil notları." showNotifications onSettingsPress={() => navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('Settings')} />
       <View style={styles.profileCard}>
         <Pressable style={styles.profileAvatar} onPress={() => { void chooseAvatar(); }} disabled={savingProfile} accessibilityRole="button" accessibilityLabel="Profil fotoğrafını değiştir">
@@ -286,6 +311,8 @@ export function OutfitHistoryScreen() {
       ) : (
         <FlatList key={columns} data={entries} keyExtractor={(entry) => entry.id} numColumns={columns} columnWrapperStyle={styles.gridRow} contentContainerStyle={styles.gridContent} renderItem={({ item }) => <GalleryCard entry={item} width={cardWidth} onDelete={() => setPendingDelete(item)} />} showsVerticalScrollIndicator={false} ListHeaderComponent={<Text style={styles.collectionCount}>{entries.length} KARE  /  SENİN STİL HİKÂYEN</Text>} />
       )}
+        </View>
+      </TouchableWithoutFeedback>
       <Modal visible={boardModalVisible} transparent animationType="fade" onRequestClose={() => { if (!isSavingBoard) setBoardModalVisible(false); }}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <Pressable style={styles.modalBackdrop} onPress={() => { if (!isSavingBoard) setBoardModalVisible(false); }} />
@@ -379,6 +406,7 @@ export function OutfitHistoryScreen() {
 }
 
 const styles = StyleSheet.create({
+  content: { flex: 1 },
   profileCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 14, marginHorizontal: 24, marginBottom: 16, padding: 16, borderRadius: 17, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   profileAvatar: { position: 'relative' },
   avatarEdit: { position: 'absolute', right: -2, bottom: -2, width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.sage, borderWidth: 2, borderColor: colors.surface },

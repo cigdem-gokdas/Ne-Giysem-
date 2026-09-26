@@ -9,14 +9,15 @@ type Props = {
   eyebrow: string;
   onSettingsPress?: () => void;
   onMenuPress?: () => void;
+  onClearPress?: () => void;
   centerTitle?: boolean;
   showNotifications?: boolean;
 };
 
 export function ScreenHeading({
-  title, subtitle, eyebrow, onSettingsPress, onMenuPress, centerTitle = false, showNotifications = false,
+  title, subtitle, eyebrow, onSettingsPress, onMenuPress, onClearPress, centerTitle = false, showNotifications = false,
 }: Props) {
-  const rightActions = (onSettingsPress ? 1 : 0) + (showNotifications ? 1 : 0);
+  const rightActions = (onSettingsPress ? 1 : 0) + (showNotifications ? 1 : 0) + (onClearPress ? 1 : 0);
   return (
     <View style={styles.container}>
       <View style={[styles.eyebrowRow, centerTitle && styles.centeredEyebrowRow]}>
@@ -25,11 +26,12 @@ export function ScreenHeading({
       </View>
       <View style={[styles.titleRow, centerTitle && styles.centeredTitleRow]}>
         {centerTitle && (
-          onMenuPress ? <Pressable style={styles.iconButton} onPress={onMenuPress} accessibilityRole="button" accessibilityLabel="Sohbet menüsünü aç"><Feather name="menu" size={22} color={colors.sage} /></Pressable>
+          onMenuPress ? <View style={{ width: Math.max(43, rightActions * 48) }}><Pressable style={styles.iconButton} onPress={onMenuPress} accessibilityRole="button" accessibilityLabel="Sohbet menüsünü aç"><Feather name="menu" size={22} color={colors.sage} /></Pressable></View>
             : <View style={[styles.actionSpacer, { width: Math.max(43, rightActions * 48) }]} />
         )}
         <Text style={[styles.title, centerTitle && styles.centeredTitle]}>{title}</Text>
         <View style={styles.actions}>
+          {onClearPress && <Pressable style={styles.iconButton} onPress={onClearPress} accessibilityRole="button" accessibilityLabel="Sohbet geçmişini temizle"><Feather name="trash-2" size={19} color={colors.pink} /></Pressable>}
           {showNotifications && <NotificationBell />}
           {onSettingsPress && <Pressable style={styles.iconButton} onPress={onSettingsPress} accessibilityRole="button" accessibilityLabel="Ayarlar"><Feather name="settings" size={20} color={colors.sage} /></Pressable>}
           {centerTitle && rightActions === 0 && <View style={styles.actionSpacer} />}

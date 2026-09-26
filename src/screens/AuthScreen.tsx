@@ -35,9 +35,12 @@ function GoogleOAuthButton({ onError }: { onError: (message: string) => void }) 
     handled.current = response.url;
     const token = response.authentication?.accessToken ?? response.params.access_token;
     if (!token) { setBusy(false); onError('Google erişim bilgisi alınamadı.'); return; }
+    let active = true;
+    const controller = new AbortController();
     setBusy(true);
     fetch(Google.discovery.userInfoEndpoint ?? 'https://openidconnect.googleapis.com/v1/userinfo', {
       headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
     }).then(async (result) => {
       if (!result.ok) throw new Error('Google profile failed');
       const info = await result.json() as GoogleUserInfo;
@@ -47,9 +50,13 @@ function GoogleOAuthButton({ onError }: { onError: (message: string) => void }) 
       const profile: GoogleProfile = {
         sub: info.sub, email: info.email, name: info.name,
         picture: typeof info.picture === 'string' ? info.picture : null,
+        idToken: response.authentication?.idToken ?? response.params.id_token ?? null,
+        accessToken: token,
       };
       await loginWithGoogle(profile);
-    }).catch(() => onError('Google profilin alınamadı. Lütfen tekrar dene.')).finally(() => setBusy(false));
+    }).catch(() => { if (active) onError('Google profilin alınamadı. Lütfen tekrar dene.'); })
+      .finally(() => { if (active) setBusy(false); });
+    return () => { active = false; controller.abort(); };
   }, [loginWithGoogle, onError, response]);
 
   return <Pressable style={[styles.googleButton, (!request || busy) && styles.disabled]} onPress={() => { setBusy(true); onError(''); void promptAsync().catch(() => { setBusy(false); onError('Google oturumu açılamadı.'); }); }} disabled={!request || busy} accessibilityRole="button" accessibilityLabel="Google ile Giriş Yap">
@@ -109,8 +116,8 @@ export function AuthScreen({ navigation }: Props) {
             <Pressable style={[styles.modeButton, mode === 'register' && styles.modeActiveLavender]} onPress={() => changeMode('register')}><Text style={[styles.modeText, mode === 'register' && styles.modeTextActive]}>Kayıt Ol</Text></Pressable>
           </View>
           <Text style={styles.cardTitle}>{mode === 'login' ? 'Hoş geldin' : 'Stil defterini aç'}</Text>
-          <Text style={styles.label}>{mode === 'login' ? 'KULLANICI ADI VEYA E-POSTA' : 'KULLANICI ADI'}</Text>
-          <TextInput style={styles.input} value={username} onChangeText={setUsername} autoCapitalize="none" autoCorrect={false} maxLength={254} placeholder={mode === 'login' ? 'Kullanıcı adın veya e-postan' : 'Kullanıcı adın'} placeholderTextColor={colors.textFaint} accessibilityLabel={mode === 'login' ? 'Kullanıcı adı veya e-posta' : 'Kullanıcı adı'} />
+          <Text style={styles.label}>{mode === 'login' ? 'E-POSTA' : 'KULLANICI ADI'}</Text>
+          <TextInput style={styles.input} value={username} onChangeText={setUsername} keyboardType={mode === 'login' ? 'email-address' : 'default'} autoComplete={mode === 'login' ? 'email' : 'username'} autoCapitalize="none" autoCorrect={false} maxLength={254} placeholder={mode === 'login' ? 'ornek@eposta.com' : 'Kullanıcı adın'} placeholderTextColor={colors.textFaint} accessibilityLabel={mode === 'login' ? 'E-posta' : 'Kullanıcı adı'} />
           {mode === 'register' && <><Text style={styles.label}>E-POSTA</Text><TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} maxLength={254} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} accessibilityLabel="E-posta" /></>}
           <Text style={styles.label}>ŞİFRE</Text>
           <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" maxLength={128} placeholder="En az 6 karakter" placeholderTextColor={colors.textFaint} accessibilityLabel="Şifre" />
