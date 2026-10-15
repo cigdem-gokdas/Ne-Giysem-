@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
@@ -10,20 +10,9 @@ import { colors, fonts } from '../theme';
 type Props = NativeStackScreenProps<AuthStackParamList, 'VerifyEmail'>;
 
 export function VerifyEmailScreen({ navigation, route }: Props) {
-  const { register, confirmEmailVerification } = useAuth();
-  const started = useRef(false);
+  const { verificationEmail, confirmEmailVerification, resendVerification, logout } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (started.current) return; started.current = true; setBusy(true);
-    let active = true;
-    register(route.params.username, route.params.email, route.params.password, route.params.acceptedTerms)
-      .then(() => { if (active) Alert.alert('Doğrulama bağlantısı gönderildi', 'E-postandaki Firebase doğrulama bağlantısına dokun, ardından bu ekrana dön.'); })
-      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : 'Hesap oluşturulamadı.'); })
-      .finally(() => { if (active) setBusy(false); });
-    return () => { active = false; };
-  }, [register, route.params]);
 
   async function verify() {
     if (busy) return;
@@ -36,18 +25,19 @@ export function VerifyEmailScreen({ navigation, route }: Props) {
   return <ScreenFrame includeBottom>
     <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.content}>
-        <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Geri dön</Text></Pressable>
+        <Pressable style={styles.back} onPress={() => { void logout().catch(() => setError('Çıkış yapılamadı.')); }} accessibilityRole="button"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Geri dön</Text></Pressable>
         <View style={styles.icon}><Feather name="mail" size={30} color={colors.lavender} /></View>
         <Text style={styles.eyebrow}>E-POSTA DOĞRULAMA</Text>
         <Text style={styles.title}>Son bir küçük adım.</Text>
-        <Text style={styles.subtitle}><Text style={styles.email}>{route.params.email}</Text> adresine gönderilen doğrulama bağlantısını aç.</Text>
+        <Text style={styles.subtitle}><Text style={styles.email}>{verificationEmail}</Text> adresine gönderilen doğrulama bağlantısını aç.</Text>
         <View style={styles.card}>
-          <Text style={styles.label}>GERÇEK FIREBASE DOĞRULAMASI</Text>
+          <Text style={styles.label}>E-POSTANI KONTROL ET</Text>
           <Text style={styles.simulation}>E-posta uygulamanda bağlantıyı açtıktan sonra aşağıdaki düğmeye dokun.</Text>
           {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
           <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void verify(); }} disabled={busy} accessibilityRole="button">
             {busy ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.buttonText}>E-postamı Doğruladım</Text>}
           </Pressable>
+          <Pressable style={styles.button} disabled={busy} onPress={() => { setBusy(true); void resendVerification().then(() => Alert.alert('Bağlantı gönderildi', 'Gelen kutunu ve spam klasörünü kontrol et.')).catch((cause) => setError(cause.message)).finally(() => setBusy(false)); }}><Text style={styles.buttonText}>Bağlantıyı yeniden gönder</Text></Pressable>
         </View>
       </View>
     </KeyboardAvoidingView>

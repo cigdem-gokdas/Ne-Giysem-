@@ -1,4 +1,5 @@
-import { collection, deleteDoc, doc, getDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
+import { forEachPage } from './paging';
+import { limit, orderBy, collection, deleteDoc, doc, getDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
 
 const BATCH_LIMIT = 450;
@@ -19,12 +20,11 @@ export async function deleteOwnedPost(userId: string, postId: string, expectedKi
     throw new Error('Paylaşım bulunamadı veya bu işlemi yapma yetkin yok.');
   }
 
-  const [likes, comments, notifications] = await Promise.all([
-    getDocs(query(collection(firestore, 'likes'), where('postId', '==', postId))),
-    getDocs(query(collection(firestore, 'comments'), where('postId', '==', postId))),
-    getDocs(query(collection(firestore, 'notifications'), where('userId', '==', userId))),
-  ]);
-  const relatedNotifications = notifications.docs.filter((snapshot) => snapshot.data().postId === postId);
-  await deleteRefs([...likes.docs, ...comments.docs, ...relatedNotifications].map((snapshot) => snapshot.ref));
+  for (const name of ['likes', 'comments']) {
+    await forEachPage(query(collection(firestore, name), where('postId', '==', postId)), async (rows) => deleteRefs(rows.map((row) => row.ref)));
+  }
+  await forEachPage(query(collection(firestore, 'notifications'), where('userId', '==', userId)), async (rows) => {
+    await deleteRefs(rows.filter((row) => row.data().postId === postId).map((row) => row.ref));
+  });
   await deleteDoc(postRef);
 }

@@ -19,14 +19,18 @@
           "microphonePermission": false
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-apple-authentication",
+      "expo-secure-store"
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.cigdemgokdas.negiysem",
       "config": {
         "usesNonExemptEncryption": false
-      }
+      },
+      "usesAppleSignIn": true,
+      "buildNumber": "1"
     },
     "android": {
       "package": "com.cigdemgokdas.negiysem",

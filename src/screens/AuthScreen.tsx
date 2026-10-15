@@ -1,5 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { LegalLinks } from '../components/LegalLinks';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
@@ -16,7 +18,12 @@ WebBrowser.maybeCompleteAuthSession();
 type Props = NativeStackScreenProps<AuthStackParamList, 'Auth'>;
 type GoogleUserInfo = { sub?: unknown; email?: unknown; name?: unknown; picture?: unknown };
 
-function GoogleOAuthButton({ onError }: { onError: (message: string) => void }) {
+function hasAppleNativeButton(): boolean {
+  const expo = (globalThis as typeof globalThis & { expo?: { getViewConfig?: (moduleName: string) => unknown } }).expo;
+  return expo?.getViewConfig?.('ExpoAppleAuthentication') != null;
+}
+
+function GoogleOAuthButton({ onError, acceptedTerms }: { onError: (message: string) => void; acceptedTerms: boolean }) {
   const { loginWithGoogle } = useAuth();
   const [busy, setBusy] = useState(false);
   const handled = useRef<string | null>(null);
@@ -53,27 +60,27 @@ function GoogleOAuthButton({ onError }: { onError: (message: string) => void }) 
         idToken: response.authentication?.idToken ?? response.params.id_token ?? null,
         accessToken: token,
       };
-      await loginWithGoogle(profile);
+      await loginWithGoogle(profile, acceptedTerms);
     }).catch(() => { if (active) onError('Google profilin alınamadı. Lütfen tekrar dene.'); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; controller.abort(); };
-  }, [loginWithGoogle, onError, response]);
+  }, [loginWithGoogle, onError, response, acceptedTerms]);
 
-  return <Pressable style={[styles.googleButton, (!request || busy) && styles.disabled]} onPress={() => { setBusy(true); onError(''); void promptAsync().catch(() => { setBusy(false); onError('Google oturumu açılamadı.'); }); }} disabled={!request || busy} accessibilityRole="button" accessibilityLabel="Google ile Giriş Yap">
+  return <Pressable style={[styles.googleButton, (!request || busy) && styles.disabled]} onPress={() => { if (!acceptedTerms) { onError('Önce kullanım koşullarını ve gizlilik metnini onayla.'); return; } setBusy(true); onError(''); void promptAsync().catch(() => { setBusy(false); onError('Google oturumu açılamadı.'); }); }} disabled={!request || busy} accessibilityRole="button" accessibilityLabel="Google ile Giriş Yap">
     {busy ? <ActivityIndicator color={colors.ink} /> : <><Text style={styles.googleMark}>G</Text><Text style={styles.googleText}>Google ile Giriş Yap</Text></>}
   </Pressable>;
 }
 
-function GoogleSignInButton({ onError }: { onError: (message: string) => void }) {
+function GoogleSignInButton({ onError, acceptedTerms }: { onError: (message: string) => void; acceptedTerms: boolean }) {
   const configured = Platform.select({ ios: !!GOOGLE_IOS_CLIENT_ID, android: !!GOOGLE_ANDROID_CLIENT_ID, default: !!GOOGLE_WEB_CLIENT_ID });
-  if (configured) return <GoogleOAuthButton onError={onError} />;
+  if (configured) return <GoogleOAuthButton onError={onError} acceptedTerms={acceptedTerms} />;
   return <Pressable style={styles.googleButton} onPress={() => onError('Google girişi için bu platformun istemci kimliği henüz yapılandırılmadı.')} accessibilityRole="button" accessibilityLabel="Google ile Giriş Yap">
     <Text style={styles.googleMark}>G</Text><Text style={styles.googleText}>Google ile Giriş Yap</Text>
   </Pressable>;
 }
 
 export function AuthScreen({ navigation }: Props) {
-  const { login } = useAuth();
+  const { login, register, loginWithApple } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -81,6 +88,16 @@ export function AuthScreen({ navigation }: Props) {
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const [appleAvailable, setAppleAvailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    if (Platform.OS !== 'ios' || !hasAppleNativeButton()) return () => { active = false; };
+    void AppleAuthentication.isAvailableAsync()
+      .then((available) => { if (active) setAppleAvailable(available); })
+      .catch(() => { if (active) setAppleAvailable(false); });
+    return () => { active = false; };
+  }, []);
 
   async function submit() {
     if (pending) return;
@@ -92,7 +109,8 @@ export function AuthScreen({ navigation }: Props) {
       } else {
         if (!acceptedTerms) throw new Error('Kullanıcı Sözleşmesi ve KVKK metnini onaylamalısın.');
         const clean = await ensureRegistrationAvailable(username, email, password);
-        navigation.navigate('VerifyEmail', { username: clean.username, email: clean.email, password, acceptedTerms: true });
+        await register(clean.username, clean.email, password, true);
+        setPassword('');
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'İşlem tamamlanamadı. Lütfen tekrar dene.');
@@ -120,18 +138,20 @@ export function AuthScreen({ navigation }: Props) {
           <TextInput style={styles.input} value={username} onChangeText={setUsername} keyboardType={mode === 'login' ? 'email-address' : 'default'} autoComplete={mode === 'login' ? 'email' : 'username'} autoCapitalize="none" autoCorrect={false} maxLength={254} placeholder={mode === 'login' ? 'ornek@eposta.com' : 'Kullanıcı adın'} placeholderTextColor={colors.textFaint} accessibilityLabel={mode === 'login' ? 'E-posta' : 'Kullanıcı adı'} />
           {mode === 'register' && <><Text style={styles.label}>E-POSTA</Text><TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} maxLength={254} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} accessibilityLabel="E-posta" /></>}
           <Text style={styles.label}>ŞİFRE</Text>
-          <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" maxLength={128} placeholder="En az 6 karakter" placeholderTextColor={colors.textFaint} accessibilityLabel="Şifre" />
-          {mode === 'register' && <Pressable style={styles.consentRow} onPress={() => setAcceptedTerms((value) => !value)} accessibilityRole="checkbox" accessibilityState={{ checked: acceptedTerms }}>
+          <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" maxLength={128} placeholder="En az 12 karakter" placeholderTextColor={colors.textFaint} accessibilityLabel="Şifre" />
+          {<Pressable style={styles.consentRow} onPress={() => setAcceptedTerms((value) => !value)} accessibilityRole="checkbox" accessibilityState={{ checked: acceptedTerms }}>
             <View style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}>{acceptedTerms && <Feather name="check" size={14} color={colors.ink} />}</View>
-            <Text style={styles.consentText}>Kullanıcı Sözleşmesi ve KVKK Metnini okudum, onaylıyorum.</Text>
+            <Text style={styles.consentText}>Kullanım koşullarını ve gizlilik metnini okudum, kabul ediyorum.</Text>
           </Pressable>}
+          <LegalLinks />
           {mode === 'login' && <Pressable style={styles.forgotLink} onPress={() => navigation.navigate('ForgotPassword')} accessibilityRole="button"><Text style={styles.forgotText}>Şifremi Unuttum</Text></Pressable>}
           {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
           <Pressable style={[styles.primaryButton, pending && styles.disabled]} onPress={() => { void submit(); }} disabled={pending} accessibilityRole="button" accessibilityLabel={mode === 'login' ? 'Giriş Yap' : 'Doğrulama kodu gönder'}>
             {pending ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.primaryText}>{mode === 'login' ? 'Giriş Yap' : 'Kayıt Ol ve E-postayı Doğrula'}</Text>}
           </Pressable>
           <View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>VEYA</Text><View style={styles.dividerLine} /></View>
-          <GoogleSignInButton onError={setError} />
+          <GoogleSignInButton onError={setError} acceptedTerms={acceptedTerms} />
+          {appleAvailable && <AppleAuthentication.AppleAuthenticationButton buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN} buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE} cornerRadius={11} style={{ height: 48, marginTop: 12 }} onPress={() => { if (pending) return; setPending(true); void loginWithApple(acceptedTerms).catch((cause) => setError(cause instanceof Error ? cause.message : 'Apple girişi tamamlanamadı.')).finally(() => setPending(false)); }} />}
         </View>
         <Text style={styles.footer}>BU CİHAZDA SANA ÖZEL BİR KÖŞE</Text>
       </ScrollView>

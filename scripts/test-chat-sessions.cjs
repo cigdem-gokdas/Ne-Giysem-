@@ -27,6 +27,9 @@ const moduleUnderTest = { exports: {} };
 vm.runInNewContext(compiled, {
   module: moduleUnderTest, exports: moduleUnderTest.exports,
   require: (name) => {
+    if (name === './writeBudget') return {};
+    if (name === './paging') return { forEachPage: async (_query, action) => { for (let i=0;i<rows.length;i+=20) await action(rows.slice(i,i+20)); } };
+    if (name === './firestoreQuery') return { getDocsWithIndexFallback: async () => ({ docs: rows }) };
     if (name === 'firebase/firestore') return firestore;
     if (name === '../config/firebase') return { firestore: {} };
     throw new Error(`Unexpected import: ${name}`);
@@ -44,7 +47,7 @@ async function main() {
   owner = 'user-1';
   await service.deleteChatSession('user-1', 'chat-0');
   assert.equal(deleted.at(-1), 'chat-0');
-  console.log('Kullanıcıya özel sohbet temizleme, 450 kayıtlık batch ve tekli sahiplik kontrolü geçti.');
+  console.log('Kullanıcıya özel sohbet temizleme, 20 kayıtlık sayfalar ve tekli sahiplik kontrolü geçti.');
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

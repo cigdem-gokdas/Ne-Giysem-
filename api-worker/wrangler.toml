@@ -6,6 +6,17 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ALLOWED_ORIGINS = "https://your-production-web-domain.example"
 FIREBASE_PROJECT_ID = "ne-giysem-ca404"
+# Firebase web API key (not an admin credential); required for revocation checks.
+FIREBASE_WEB_API_KEY = "AIzaSyCwR2kyB_0bgRcw1dAc5VKi69ETZeZq78I"
+REVENUECAT_ENTITLEMENT = "pro"
+# Enable only on an isolated preview Worker for StoreKit / TestFlight sandbox tests.
+REVENUECAT_ALLOW_SANDBOX = "false"
+# Verified Firebase UIDs of designated App Review / TestFlight accounts only.
+REVENUECAT_SANDBOX_USER_IDS = ""
+AI_ENABLED = "true"
+AI_MONTHLY_BUDGET_CENTS = "500"
+AI_DAILY_REQUEST_LIMIT = "100"
+AI_MONTHLY_REQUEST_LIMIT = "1000"
 
 [[r2_buckets]]
 binding = "IMAGES"
@@ -21,3 +32,11 @@ new_sqlite_classes = ["RateLimiter"]
 
 # Secrets are added with:
 # npx wrangler secret put OPENAI_API_KEY
+
+[[durable_objects.bindings]]
+name = "COST_GUARD"
+class_name = "CostGuard"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CostGuard"]

@@ -1,3 +1,4 @@
+import { requireAiConsent } from './aiConsent';
 import { buildWardrobeSummary, hasAvailableMainPiece, isMainClothingType, type OutfitHistoryEntry, type WardrobeSummaryItem } from '../data/outfitHistory';
 import type { ClothingItem } from '../data/wardrobe';
 import { workerPost } from './workerApi';
@@ -128,12 +129,13 @@ export async function recommendOutfit(
   const candidateIds = new Set(replacementCandidates.map((item) => item.id));
   const sentSummary = replacement
     ? wardrobeSummary.filter((item) => replacement.previousIds.includes(item.id) || candidateIds.has(item.id))
-    : buildRotationPool(wardrobeSummary);
+    : buildRotationPool(wardrobeSummary).slice(0, 100);
   if (!replacement && sentSummary.length < 2) throw new Error('Aynı parçaları tekrarlamadan kombin kurmak için yeterli uygun parça yok.');
   const userMessage = replacement
     ? `${prompt.trim()}\nSon kombin ID'leri: ${JSON.stringify(replacement.previousIds)}. Değişecek ID: ${replacement.replaceId}. Aynen korunacak ID'ler: ${JSON.stringify(replacement.previousIds.filter((id) => id !== replacement.replaceId))}.\n${REPLACEMENT_RULE}`
     : prompt.trim();
 
-  const result = await workerPost<{ recommendation: unknown }>(userId, '/generate-outfit', { wardrobe: sentSummary, message: userMessage }, signal);
+  await requireAiConsent(userId);
+  const result = await workerPost<{ recommendation: unknown }>(userId, '/generate-outfit', { aiConsent: true, wardrobe: sentSummary, message: userMessage }, signal);
   return parseRecommendation(result.recommendation, wardrobe, wardrobeSummary, replacement, replacementCandidates);
 }

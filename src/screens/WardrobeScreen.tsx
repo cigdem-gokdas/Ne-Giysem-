@@ -1,3 +1,5 @@
+import type { QueryDocumentSnapshot } from 'firebase/firestore';
+import { PlanBanner } from '../components/PlanBanner';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { useIsFocused, useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
@@ -9,7 +11,7 @@ import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
 import { buildWardrobeSummary, getOutfitHistory, type WardrobeSummaryItem } from '../data/outfitHistory';
-import { CLOTHING_TYPES, FIT_TYPES, SUBTYPES, deleteClothingItem, getClothingItems, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
+import { CLOTHING_TYPES, FIT_TYPES, SUBTYPES, deleteClothingItem, getClothingPage, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 
@@ -20,6 +22,8 @@ export function WardrobeScreen() {
   const navigation = useNavigation<Navigation>();
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
+  const [cursor, setCursor] = useState<QueryDocumentSnapshot>();
+  const [loadingMore, setLoadingMore] = useState(false);
   const [items, setItems] = useState<ClothingItem[]>([]);
   const [usageById, setUsageById] = useState<Record<string, WardrobeSummaryItem>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -37,16 +41,26 @@ export function WardrobeScreen() {
     let active = true;
     setIsLoading(true);
     setLoadError(false);
-    Promise.all([getClothingItems(userId), getOutfitHistory(userId).catch(() => [])])
-      .then(([saved, history]) => {
+    Promise.all([getClothingPage(userId), getOutfitHistory(userId).catch(() => [])])
+      .then(([page, history]) => {
+        const saved = page.items;
         if (!active) return;
         setItems(saved);
+        setCursor(page.cursor);
         setUsageById(Object.fromEntries(buildWardrobeSummary(saved, history).map((usage) => [usage.id, usage])));
       })
       .catch(() => { if (active) setLoadError(true); })
       .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
   }, [isFocused, retryCount, userId]);
+
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    try { const page = await getClothingPage(userId, cursor); setItems(current => [...current, ...page.items.filter(next => !current.some(previous => previous.id === next.id))]); setCursor(page.cursor); }
+    catch (error) { Alert.alert('Yüklenemedi', error instanceof Error ? error.message : 'Daha sonra tekrar dene.'); }
+    finally { setLoadingMore(false); }
+  }
 
   function openActions(item: ClothingItem) {
     setSelectedItem(item);
@@ -120,6 +134,7 @@ export function WardrobeScreen() {
   return (
     <ScreenFrame>
       <ScreenHeading eyebrow="NE GİYSEM?  /  01" title="Gardırobun" subtitle="Sevdiğin parçaların küçük bir arşivi." showNotifications onSettingsPress={() => navigation.navigate('Settings')} />
+      <PlanBanner />
       {isLoading ? (
         <View style={styles.centerState}><ActivityIndicator size="large" color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
       ) : loadError ? (
@@ -151,6 +166,7 @@ export function WardrobeScreen() {
           columnWrapperStyle={styles.gridRow}
           contentContainerStyle={styles.gridContent}
           showsVerticalScrollIndicator={false}
+          ListFooterComponent={cursor ? <PrimaryButton label={loadingMore ? 'Yükleniyor…' : 'Daha fazla kıyafet göster'} disabled={loadingMore} onPress={() => void loadMore()} /> : null}
           ListHeaderComponent={
             <View style={styles.gridHeader}>
               <Text style={styles.collectionCount}>KOLEKSİYON  /  {items.length} PARÇA</Text>

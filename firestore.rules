@@ -1,111 +1,181 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
+    function authenticated() { return request.auth != null; }
+    function signedIn() { return authenticated() && request.auth.token.email_verified == true && !exists(/databases/$(database)/documents/account_deletions/$(request.auth.uid)); }
+    function self(uid) { return authenticated() && request.auth.uid == uid; }
     function owner(data) { return signedIn() && data.userId == request.auth.uid; }
-    function userExists(userId) { return exists(/databases/$(database)/documents/users/$(userId)); }
-    function isAdmin() {
-      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    function bounded(n) { return request.query.limit != null && request.query.limit <= n; }
+    function short(value, n) { return value is string && value.size() <= n; }
+    function text(value, n) { return short(value, n) && value.size() > 0; }
+    function date(value) { return value is string && value.size() == 24; }
+    function isAdmin() { return signedIn() && request.auth.token.get('admin', false) == true; }
+    function userExists(uid) { return exists(/databases/$(database)/documents/users/$(uid)); }
+    function post(id) { return get(/databases/$(database)/documents/posts/$(id)); }
+    function postOwner(id) { return signedIn() && post(id).data.userId == request.auth.uid; }
+    function postReadable(id) { return signedIn() && (post(id).data.isPublic == true || postOwner(id)); }
+    function blockedEitherWay(other) {
+      return exists(/databases/$(database)/documents/blocked_users/$(request.auth.uid + '_' + other)) ||
+        exists(/databases/$(database)/documents/blocked_users/$(other + '_' + request.auth.uid));
     }
-    function post(postId) { return get(/databases/$(database)/documents/posts/$(postId)); }
-    function postReadable(postId) {
-      return signedIn() && post(postId).data != null &&
-        (post(postId).data.isPublic == true || post(postId).data.userId == request.auth.uid);
+    function media(url) { return url == null || (short(url, 700) && url.matches('https://[^/]+/media/.*')); }
+    function key(value, folder) { return value is string && value.matches(folder + '/' + request.auth.uid + '/[a-f0-9-]{36}[.](jpg|png|webp|heic|heif)'); }
+    function ownStable() { return owner(resource.data) && request.resource.data.userId == resource.data.userId && request.resource.data.createdAt == resource.data.createdAt; }
+    function charged(path) {
+      let after = getAfter(/databases/$(database)/documents/write_limits/$(request.auth.uid)).data;
+      return after.at == request.time && path in after.paths &&
+        (!exists(/databases/$(database)/documents/write_limits/$(request.auth.uid)) ||
+         after.count != get(/databases/$(database)/documents/write_limits/$(request.auth.uid)).data.count ||
+         after.day != get(/databases/$(database)/documents/write_limits/$(request.auth.uid)).data.day);
     }
-    function blockedEitherWay(otherId) {
-      return exists(/databases/$(database)/documents/blocked_users/$(request.auth.uid + '_' + otherId)) ||
-        exists(/databases/$(database)/documents/blocked_users/$(otherId + '_' + request.auth.uid));
+    match /account_deletions/{uid} { allow get: if self(uid); }
+    match /write_limits/{uid} {
+      allow get: if self(uid);
+      allow create, update: if self(uid) && signedIn() && request.resource.data.keys().hasOnly(['day','count','paths','at']) &&
+        request.resource.data.day == request.time.date() && request.resource.data.at == request.time &&
+        request.resource.data.paths is list && request.resource.data.paths.size() > 0 && request.resource.data.paths.size() <= 2 &&
+        request.resource.data.count is int && request.resource.data.count <= 150 &&
+        ((!exists(/databases/$(database)/documents/write_limits/$(uid)) && request.resource.data.count == request.resource.data.paths.size()) ||
+         (exists(/databases/$(database)/documents/write_limits/$(uid)) && request.resource.data.count ==
+          (resource.data.day == request.time.date() ? resource.data.count : 0) + request.resource.data.paths.size()));
     }
+    function profile(d) {
+      return d.keys().hasOnly(['username','usernameLower','avatarUri','avatarKey','bio','role','authProvider','termsAcceptedAt','shareGallery','shareBoards','createdAt']) &&
+        text(d.username,32) && text(d.usernameLower,64) && short(d.bio,160) && media(d.avatarUri) &&
+        (d.avatarKey == null || key(d.avatarKey,'avatars')) && d.shareGallery is bool && d.shareBoards is bool;
+    }
+    match /users/{uid} {
+      allow get: if self(uid) || signedIn();
+      allow list: if signedIn() && bounded(50);
+      allow create: if self(uid) && !exists(/databases/$(database)/documents/account_deletions/$(uid)) && profile(request.resource.data) && request.resource.data.role == 'user' &&
+        request.resource.data.authProvider in ['local','google','apple'] && request.resource.data.createdAt == request.time &&
+        request.resource.data.shareGallery == false && request.resource.data.shareBoards == false;
+      allow update: if self(uid) && signedIn() && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shareGallery']) && request.resource.data.shareGallery == false) ||
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shareBoards']) && request.resource.data.shareBoards == false) ||
+        (charged('users/' + uid) && profile(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username','usernameLower','avatarUri','avatarKey','bio','shareGallery','shareBoards'])));
 
-    match /users/{userId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == userId && request.resource.data.role == 'user';
-      allow update: if signedIn() && request.auth.uid == userId &&
-        request.resource.data.role == resource.data.role &&
-        request.resource.data.authProvider == resource.data.authProvider;
-      allow delete: if signedIn() && request.auth.uid == userId;
+      allow delete: if self(uid);
     }
-
+    match /account_settings/{uid} {
+      allow get, delete: if self(uid);
+      allow create, update: if self(uid) && request.resource.data.keys().hasOnly(['aiConsent','termsVersion','termsAcceptedAt']) &&
+        request.resource.data.aiConsent is bool && request.resource.data.termsVersion == '2026-10-03' && request.resource.data.termsAcceptedAt is timestamp;
+    }
+    function clothing(d) {
+      return d.keys().hasOnly(['userId','imageUri','storageKey','tur','renk','desen','kesim','altTur','kemerUygun','secondaryColors','season','styleTags','formality','materialGuess','createdAt']) &&
+        d.tur in ['üst','alt','dış giyim','ayakkabı','aksesuar'] && text(d.renk,80) && text(d.desen,80) &&
+        d.kesim in ['dar','normal','bol','bilinmiyor'] && d.altTur in ['tişört','gömlek','kazak','pantolon','etek','ceket','kaban','ayakkabı','çanta','kemer','diğer'] &&
+        d.kemerUygun is bool && (!('secondaryColors' in d) || (d.secondaryColors is list && d.secondaryColors.size() <= 4)) &&
+        (!('season' in d) || (d.season is list && d.season.size() <= 4)) && (!('styleTags' in d) || (d.styleTags is list && d.styleTags.size() <= 8)) &&
+        (!('formality' in d) || d.formality in ['günlük','smart casual','resmi','bilinmiyor']) && (!('materialGuess' in d) || text(d.materialGuess,80)) &&
+        media(d.imageUri) && key(d.storageKey,'wardrobe') && date(d.createdAt);
+    }
     match /wardrobe/{id} {
-      allow read: if owner(resource.data);
-      allow create: if owner(request.resource.data);
-      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
-      allow delete: if owner(resource.data);
+      allow get, delete: if owner(resource.data);
+      allow list: if owner(resource.data) && bounded(100);
+      // Only the Worker creates items after a serialized 50-item / verified Pro check.
+      allow create: if false;
+      allow update: if charged('wardrobe/' + id) && ownStable() && clothing(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tur','renk','desen','kesim','altTur','kemerUygun']);
+    }
+    function chat(d) {
+      return d.keys().hasOnly(['userId','title','createdAt','messages']) && text(d.title,80) && date(d.createdAt) && d.messages is list && d.messages.size() > 0 && d.messages.size() <= 50;
     }
     match /chat_sessions/{id} {
-      allow read: if owner(resource.data);
-      allow create: if owner(request.resource.data);
-      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
-      allow delete: if owner(resource.data);
+      allow get, delete: if owner(resource.data);
+      allow list: if owner(resource.data) && bounded(20);
+      allow create: if charged('chat_sessions/' + id) && owner(request.resource.data) && chat(request.resource.data);
+      allow update: if charged('chat_sessions/' + id) && ownStable() && chat(request.resource.data);
+    }
+    function history(d) {
+      return d.keys().hasOnly(['userId','createdAt','userMessage','assistantMessage','selectedIds']) && date(d.createdAt) && text(d.userMessage,1200) && text(d.assistantMessage,1500) &&
+        d.selectedIds is list && d.selectedIds.size() > 0 && d.selectedIds.size() <= 12;
     }
     match /outfit_history/{id} {
-      allow read: if owner(resource.data);
-      allow create: if owner(request.resource.data);
-      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
-      allow delete: if owner(resource.data);
+      allow get, delete: if owner(resource.data);
+      allow list: if owner(resource.data) && bounded(100);
+      allow create: if charged('outfit_history/' + id) && owner(request.resource.data) && history(request.resource.data);
+      allow update: if charged('outfit_history/' + id) && false;
+    }
+    function board(d) {
+      return d.keys().hasOnly(['userId','title','itemIds','createdAt','isPublic']) && text(d.title,80) && date(d.createdAt) &&
+        d.itemIds is list && d.itemIds.size() > 0 && d.itemIds.size() <= 12 && d.isPublic is bool;
     }
     match /mood_boards/{id} {
-      allow read: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
-      allow create: if owner(request.resource.data);
-      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
+      allow get: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
+      allow list: if signedIn() && bounded(50) && (resource.data.isPublic == true || owner(resource.data));
+      allow create: if charged('mood_boards/' + id) && owner(request.resource.data) && board(request.resource.data);
+      allow update: if ownStable() && ((request.resource.data.isPublic == false && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])) ||
+        (charged('mood_boards/' + id) && board(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])));
       allow delete: if owner(resource.data);
+    }
+    function validPost(d) {
+      return d.keys().hasOnly(['userId','kind','title','imageUri','storageKey','itemIds','items','createdAt','isPublic']) && short(d.title,160) && date(d.createdAt) && d.isPublic is bool &&
+        ((d.kind == 'gallery' && media(d.imageUri) && key(d.storageKey,'gallery')) ||
+         (d.kind == 'board' && d.imageUri == null && d.itemIds is list && d.itemIds.size() <= 12 && d.items is list && d.items.size() <= 12));
     }
     match /posts/{id} {
-      allow read: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
-      allow create: if owner(request.resource.data) && request.resource.data.kind in ['gallery', 'board'];
-      allow update: if owner(resource.data) && request.resource.data.userId == resource.data.userId;
-      allow delete: if owner(resource.data);
+      allow get: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
+      allow list: if signedIn() && bounded(50) && (resource.data.isPublic == true || owner(resource.data));
+      allow create: if charged('posts/' + id) && owner(request.resource.data) && validPost(request.resource.data);
+      allow update: if ownStable() && ((request.resource.data.isPublic == false && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])) ||
+        (charged('posts/' + id) && validPost(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic','title'])));
+      allow delete: if owner(resource.data) || isAdmin();
     }
-
+    function interaction(d) {
+      return owner(d) && d.postType == post(d.postId).data.kind && date(d.createdAt) &&
+        post(d.postId).data.isPublic == true && !blockedEitherWay(post(d.postId).data.userId);
+    }
     match /likes/{id} {
-      allow read: if owner(resource.data) || postReadable(resource.data.postId);
-      allow create: if owner(request.resource.data) && id == request.auth.uid + '_' + request.resource.data.postId &&
-        post(request.resource.data.postId).data.isPublic == true &&
-        !blockedEitherWay(post(request.resource.data.postId).data.userId);
-      allow delete: if owner(resource.data) || post(resource.data.postId).data.userId == request.auth.uid;
+      // Known deterministic IDs may be read even if they do not exist.
+      allow get: if signedIn() && (id.matches(request.auth.uid + '_.*') || postReadable(resource.data.postId));
+      allow list: if signedIn() && bounded(50) && (owner(resource.data) || postReadable(resource.data.postId));
+      allow create: if charged('likes/' + id) && request.resource.data.keys().hasOnly(['userId','postId','postType','createdAt']) && interaction(request.resource.data) && id == request.auth.uid + '_' + request.resource.data.postId;
+      allow delete: if signedIn() && (id.matches(request.auth.uid + '_.*') || postOwner(resource.data.postId));
     }
     match /comments/{id} {
-      allow read: if owner(resource.data) || postReadable(resource.data.postId);
-      allow create: if owner(request.resource.data) && request.resource.data.text is string &&
-        request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 300 &&
-        post(request.resource.data.postId).data.isPublic == true &&
-        !blockedEitherWay(post(request.resource.data.postId).data.userId);
-      allow update: if false;
-      allow delete: if owner(resource.data) || post(resource.data.postId).data.userId == request.auth.uid;
+      allow get: if owner(resource.data) || postReadable(resource.data.postId);
+      allow list: if bounded(50) && (owner(resource.data) || postReadable(resource.data.postId));
+      allow create: if charged('comments/' + id) && request.resource.data.keys().hasOnly(['userId','postId','postType','text','createdAt']) && interaction(request.resource.data) && text(request.resource.data.text,300);
+      allow delete: if owner(resource.data) || postOwner(resource.data.postId) || isAdmin();
     }
     match /notifications/{id} {
-      allow read, delete: if owner(resource.data);
-      allow update: if owner(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
-      allow create: if signedIn() && request.resource.data.actorId == request.auth.uid &&
-        request.resource.data.userId == post(request.resource.data.postId).data.userId &&
-        request.resource.data.type in ['like', 'comment'] &&
-        request.resource.data.message is string && request.resource.data.message.size() <= 180 &&
-        request.resource.data.isRead == false && !blockedEitherWay(request.resource.data.userId);
+      allow get, delete: if owner(resource.data) || (signedIn() && resource.data.actorId == request.auth.uid);
+      allow list: if bounded(50) && (owner(resource.data) || (signedIn() && resource.data.actorId == request.auth.uid));
+      allow update: if charged('notifications/' + id) && owner(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) && request.resource.data.isRead == true;
+      allow create: if charged('notifications/' + id) && signedIn() && request.resource.data.keys().hasOnly(['actorId','userId','postId','type','message','isRead','createdAt','sourceId']) &&
+        request.resource.data.actorId == request.auth.uid && request.resource.data.userId != request.auth.uid &&
+        request.resource.data.userId == post(request.resource.data.postId).data.userId && post(request.resource.data.postId).data.isPublic == true &&
+        request.resource.data.type in ['like','comment'] && text(request.resource.data.message,180) && date(request.resource.data.createdAt) &&
+        request.resource.data.isRead == false && !blockedEitherWay(request.resource.data.userId) &&
+        id == request.resource.data.type + '_' + request.resource.data.sourceId &&
+        ((request.resource.data.type == 'like' && getAfter(/databases/$(database)/documents/likes/$(request.resource.data.sourceId)).data.userId == request.auth.uid &&
+          getAfter(/databases/$(database)/documents/likes/$(request.resource.data.sourceId)).data.postId == request.resource.data.postId) ||
+         (request.resource.data.type == 'comment' && getAfter(/databases/$(database)/documents/comments/$(request.resource.data.sourceId)).data.userId == request.auth.uid &&
+          getAfter(/databases/$(database)/documents/comments/$(request.resource.data.sourceId)).data.postId == request.resource.data.postId));
     }
     match /follows/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.followerId == request.auth.uid &&
-        id == request.auth.uid + '_' + request.resource.data.followedId &&
-        userExists(request.resource.data.followedId) && !blockedEitherWay(request.resource.data.followedId);
-      allow delete: if signedIn() &&
-        (resource.data.followerId == request.auth.uid || resource.data.followedId == request.auth.uid);
+      allow get: if signedIn();
+      allow list: if signedIn() && bounded(50);
+      allow create: if charged('follows/' + id) && signedIn() && request.resource.data.keys().hasOnly(['followerId','followedId','createdAt']) &&
+        request.resource.data.followerId == request.auth.uid && request.resource.data.followedId != request.auth.uid && date(request.resource.data.createdAt) &&
+        id == request.auth.uid + '_' + request.resource.data.followedId && userExists(request.resource.data.followedId) && !blockedEitherWay(request.resource.data.followedId);
+      allow delete: if signedIn() && (id.matches(request.auth.uid + '_.*') || id.matches('.*_' + request.auth.uid));
     }
     match /blocked_users/{id} {
-      allow read: if signedIn() &&
-        (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
-      allow create: if signedIn() && request.resource.data.blockerId == request.auth.uid &&
-        id == request.auth.uid + '_' + request.resource.data.blockedId && userExists(request.resource.data.blockedId);
-      allow delete: if signedIn() &&
-        (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+      allow get: if signedIn() && (id.matches(request.auth.uid + '_.*') || id.matches('.*_' + request.auth.uid));
+      allow list: if signedIn() && bounded(50) && (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+      allow create: if charged('blocked_users/' + id) && signedIn() && request.resource.data.keys().hasOnly(['blockerId','blockedId','createdAt']) && request.resource.data.blockerId == request.auth.uid &&
+        request.resource.data.blockedId != request.auth.uid && date(request.resource.data.createdAt) && id == request.auth.uid + '_' + request.resource.data.blockedId && userExists(request.resource.data.blockedId);
+      allow delete: if signedIn() && resource.data.blockerId == request.auth.uid;
     }
     match /reports/{id} {
-      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid &&
-        request.resource.data.reportedId != request.auth.uid && userExists(request.resource.data.reportedId) &&
-        request.resource.data.reason is string && request.resource.data.reason.size() <= 240;
-      allow read: if isAdmin() || (signedIn() &&
-        (resource.data.reporterId == request.auth.uid || resource.data.reportedId == request.auth.uid));
-      allow delete: if isAdmin() || (signedIn() &&
-        (resource.data.reporterId == request.auth.uid || resource.data.reportedId == request.auth.uid));
+      allow create: if charged('reports/' + id) && signedIn() && request.resource.data.keys().hasOnly(['reporterId','reportedId','reason','createdAt']) && request.resource.data.reporterId == request.auth.uid &&
+        request.resource.data.reportedId != request.auth.uid && userExists(request.resource.data.reportedId) && text(request.resource.data.reason,240) && date(request.resource.data.createdAt) &&
+        id == request.auth.uid + '_' + request.resource.data.reportedId;
+      allow get, delete: if isAdmin() || (signedIn() && resource.data.reporterId == request.auth.uid);
+      allow list: if bounded(50) && (isAdmin() || (signedIn() && resource.data.reporterId == request.auth.uid));
     }
+    match /{document=**} { allow read, write: if false; }
   }
 }

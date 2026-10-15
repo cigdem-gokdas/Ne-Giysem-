@@ -36,11 +36,11 @@ export function SocialPostCard({ post, onUserPress, onLike, onComments, onMore, 
         <View style={styles.interactions}>
           <Pressable onPress={onLike} disabled={busy} style={[styles.action, post.likedByViewer && styles.likedAction]} accessibilityRole="button" accessibilityLabel={post.likedByViewer ? 'Beğeniyi kaldır' : 'Beğen'}>
             <Feather name="heart" size={19} color={post.likedByViewer ? colors.pink : colors.textMuted} />
-            <Text style={[styles.actionCount, post.likedByViewer && styles.likedCount]}>{post.likeCount}</Text>
+            <Text style={[styles.actionCount, post.likedByViewer && styles.likedCount]}>{post.likeCount >= 50 ? '50+' : post.likeCount}</Text>
           </Pressable>
           <Pressable onPress={onComments} style={styles.action} accessibilityRole="button" accessibilityLabel="Yorumları aç">
             <Feather name="message-circle" size={19} color={colors.sage} />
-            <Text style={styles.actionCount}>{post.commentCount}</Text>
+            <Text style={styles.actionCount}>{post.commentCount >= 50 ? '50+' : post.commentCount}</Text>
           </Pressable>
         </View>
         <Text style={styles.date}>{new Date(post.createdAt).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' })}</Text>

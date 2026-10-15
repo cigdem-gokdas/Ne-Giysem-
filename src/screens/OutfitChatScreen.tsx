@@ -1,3 +1,7 @@
+import { PlanBanner } from '../components/PlanBanner';
+import { useSubscription } from '../billing/SubscriptionContext';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/AppNavigator';
 import { Feather } from '@expo/vector-icons';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -14,8 +18,9 @@ import { buildWardrobeSummary, getOutfitHistory, hasAvailableMainPiece, saveOutf
 import { getClothingItems, type ClothingItem } from '../data/wardrobe';
 import type { MainTabParamList } from '../navigation/AppNavigator';
 import { getReplacementCandidates, isReplacementRequest, recommendOutfit, type ReplacementRequest } from '../services/recommendOutfit';
-import { RateLimitError } from '../services/workerApi';
+import { RateLimitError, ProRequiredError } from '../services/workerApi';
 import { colors, fonts } from '../theme';
+import { friendlyError, reportError, track } from '../services/telemetry';
 
 type ChatMessage =
   | { id: string; role: 'user'; text: string }
@@ -52,6 +57,8 @@ function messagesFromSession(session: ChatSession | undefined, wardrobe: Clothin
 
 export function OutfitChatScreen() {
   const userId = useUserId();
+  const { status: plan, refresh: refreshPlan } = useSubscription();
+  const rootNavigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
@@ -228,6 +235,8 @@ export function OutfitChatScreen() {
     const prompt = text.trim();
     if (!prompt || sendingRef.current || deletingChats || isLoadingWardrobe || loadError || wardrobe.length < 2) return;
 
+    if (plan && !plan.pro && plan.freeChatsRemaining === 0) { track('free_ai_limit_reached'); rootNavigation.navigate('Pro'); return; }
+    track('stylist_message_sent', { pro: plan?.pro === true });
     let exchange = replacement;
     if (!exchange && isReplacementRequest(prompt) && lastOutfit) {
       const selectedItems = lastOutfit.selectedIds.flatMap((id) => {
@@ -280,7 +289,7 @@ export function OutfitChatScreen() {
         sessionId = saved.session.id;
         activeSessionIdRef.current = sessionId;
         setActiveSessionId(sessionId);
-        setSessions(saved.sessions);
+        setSessions((previous) => [saved.session, ...previous.filter((row) => row.id !== saved.session.id)].slice(0, 20));
         setMessages(messagesFromSession(saved.session, currentWardrobe));
         userMessageSaved = true;
       }
@@ -295,7 +304,7 @@ export function OutfitChatScreen() {
       try {
         const saved = await appendChatMessage(userId, sessionId, { role: 'assistant', text: recommendation.mesaj, selectedIds: recommendation.secilen_idler });
         if (!mountedRef.current) return;
-        setSessions(saved.sessions);
+        setSessions((previous) => [saved.session, ...previous.filter((row) => row.id !== saved.session.id)].slice(0, 20));
         setMessages(messagesFromSession(saved.session, currentWardrobe));
       } catch {
         if (mountedRef.current) {
@@ -322,10 +331,12 @@ export function OutfitChatScreen() {
           Alert.alert('Sohbet kaydedilemedi', 'Mesaj cihazına kaydedilemedi. Lütfen tekrar dene.');
         } else {
           setFailedRequest({ prompt, replacement: exchange });
-          if (error instanceof RateLimitError) {
+          reportError('stylist_message', error);
+          if (error instanceof ProRequiredError) { track('free_ai_limit_reached'); rootNavigation.navigate('Pro'); }
+          else if (error instanceof RateLimitError) {
             Alert.alert(error.reason === 'daily' ? 'Günlük ilham sınırı' : 'Biraz yavaşlayalım', error.message);
           } else {
-            Alert.alert('Kombin oluşturulamadı', error instanceof Error ? error.message : 'Kombin önerisi alınamadı, lütfen tekrar dene.');
+            Alert.alert('Kombin oluşturulamadı', friendlyError(error, 'Stil danışmanı şu anda yanıt veremiyor. Mesajın kaydedildi; tekrar deneyebilirsin.'));
           }
         }
       }
@@ -333,6 +344,7 @@ export function OutfitChatScreen() {
       clearTimeout(timeout);
       if (controllerRef.current === controller) controllerRef.current = null;
       sendingRef.current = false;
+      void refreshPlan();
       if (mountedRef.current) setIsSending(false);
     }
   }
@@ -341,6 +353,7 @@ export function OutfitChatScreen() {
     <ScreenFrame>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
         <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} onClearPress={sessions.length > 0 && !deletingChats && !isSending ? confirmClearChats : undefined} centerTitle showNotifications />
+        <PlanBanner chat />
         {isLoadingWardrobe ? (
           <View style={styles.centerState}><ActivityIndicator color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
         ) : loadError ? (

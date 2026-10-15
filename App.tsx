@@ -1,3 +1,5 @@
+import { SubscriptionProvider } from './src/billing/SubscriptionContext';
+import { WardrobeOpening } from './src/components/WardrobeOpening';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -22,11 +24,14 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
+        <SubscriptionProvider>
         <NavigationContainer theme={navigationTheme}>
           <StatusBar style="light" />
           <AppNavigator />
           <CloudUploadModal />
+          <WardrobeOpening />
         </NavigationContainer>
+        </SubscriptionProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

@@ -8,21 +8,27 @@
     "@react-navigation/bottom-tabs": "^7.19.2",
     "@react-navigation/native": "^7.4.1",
     "@react-navigation/native-stack": "^7.19.2",
-    "expo": "~57.0.24",
-    "expo-auth-session": "~57.0.12",
-    "expo-constants": "~57.0.19",
+    "expo": "~57.0.27",
+    "expo-apple-authentication": "~57.0.0",
+    "expo-auth-session": "~57.0.14",
+    "expo-constants": "~57.0.21",
+    "expo-crypto": "~57.0.0",
     "expo-file-system": "~57.0.7",
     "expo-font": "~57.0.4",
+    "expo-image-manipulator": "~57.0.21",
     "expo-image-picker": "~57.0.19",
+    "expo-secure-store": "~57.0.0",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.3",
     "firebase": "^12.19.0",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-purchases": "^10.12.2",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
@@ -43,11 +49,17 @@
     "test:avatar": "node scripts/test-avatar.cjs",
     "test:outfit-rules": "node scripts/test-outfit-rules.cjs",
     "test:chat-sessions": "node scripts/test-chat-sessions.cjs",
-    "test": "npm run typecheck && npm run typecheck:worker && npm run test:analysis && npm run test:recommend && npm run test:outfit-rules && npm run test:chat-sessions && npm run test:r2 && npm run test:rate-limit && npm run test:worker-client && npm run test:avatar",
-    "test:cloud-build": "expo export --platform ios --output-dir /tmp/ne-giysem-cloud-check"
+    "test": "npm run typecheck && npm run typecheck:worker && npm run test:analysis && npm run test:recommend && npm run test:outfit-rules && npm run test:chat-sessions && npm run test:r2 && npm run test:rate-limit && npm run test:worker-client && npm run test:avatar && npm run test:security && npm run test:pro",
+    "test:cloud-build": "expo export --platform ios --output-dir /tmp/ne-giysem-cloud-check",
+    "test:security": "node scripts/test-worker-security.cjs && node scripts/test-secure-storage.cjs && node scripts/test-account-deletion.cjs",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-ne-giysem \"node scripts/test-firestore.cjs\"",
+    "check:release": "node scripts/check-release.cjs",
+    "eas-build-post-install": "node scripts/eas-post-install.cjs",
+    "test:pro": "node scripts/test-pro.cjs"
   },
   "overrides": {
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "@grpc/grpc-js": "^1.14.5"
   },
   "private": true
 }

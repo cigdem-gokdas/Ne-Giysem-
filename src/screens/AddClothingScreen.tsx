@@ -1,22 +1,27 @@
+import { useSubscription } from '../billing/SubscriptionContext';
+import { PlanBanner } from '../components/PlanBanner';
+import { prepareImage } from '../services/prepareImage';
 import { Feather } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
-import { addClothingItem, type ClothingTags } from '../data/wardrobe';
+import { addClothingItem, CLOTHING_TYPES, FIT_TYPES, getWardrobeCapacity, SUBTYPES, type ClothingTags } from '../data/wardrobe';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { analyzeClothing } from '../services/analyzeClothing';
 import type { ImageUploadMetadata } from '../services/r2Storage';
-import { RateLimitError } from '../services/workerApi';
+import { RateLimitError, ProRequiredError } from '../services/workerApi';
 import { colors, fonts } from '../theme';
+import { friendlyError, reportError, track } from '../services/telemetry';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AddClothing'>;
 
 export function AddClothingScreen({ navigation }: Props) {
   const userId = useUserId();
+  const { status: plan, refresh: refreshPlan } = useSubscription();
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [uploadMetadata, setUploadMetadata] = useState<ImageUploadMetadata>({});
   const [tags, setTags] = useState<ClothingTags | null>(null);
@@ -24,37 +29,48 @@ export function AddClothingScreen({ navigation }: Props) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisFailed, setAnalysisFailed] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const mountedRef = useRef(true);
+  const pickingRef = useRef(false);
+  const savingRef = useRef(false);
+  const analyzingRef = useRef(false);
   const base64Ref = useRef<string | null>(null);
   const analysisController = useRef<AbortController | null>(null);
   const analysisRequestId = useRef(0);
 
-  useEffect(() => () => {
+  useEffect(() => { mountedRef.current = true; return () => {
+    mountedRef.current = false;
     analysisRequestId.current += 1;
     analysisController.current?.abort();
-  }, []);
+  }; }, []);
 
-  async function runAnalysis(base64Jpeg: string) {
+  async function runAnalysis(base64Jpeg: string, pro = plan?.pro) {
+    if (!mountedRef.current || analyzingRef.current) return;
+    if (!pro) { navigation.navigate('Pro'); return; }
+    analyzingRef.current = true;
     const requestId = ++analysisRequestId.current;
     analysisController.current?.abort();
     const controller = new AbortController();
     analysisController.current = controller;
     const timeout = setTimeout(() => controller.abort(), 30000);
-    setTags(null);
+
     setAnalysisFailed(false);
     setIsAnalyzing(true);
+    track('ai_auto_tag_started');
 
     try {
       const result = await analyzeClothing(userId, base64Jpeg, controller.signal);
-      if (analysisRequestId.current === requestId) setTags(result);
+      if (analysisRequestId.current === requestId) { setTags(result); track('ai_auto_tag_success'); }
     } catch (error) {
       if (analysisRequestId.current === requestId) {
+        track('ai_auto_tag_failed');
+        reportError('ai_auto_tag', error);
         setAnalysisFailed(true);
         if (error instanceof RateLimitError) {
           Alert.alert(error.reason === 'daily' ? 'Günlük ilham sınırı' : 'Biraz yavaşlayalım', error.message);
         } else if (error instanceof Error && error.name === 'AbortError') {
           Alert.alert('Analiz zaman aşımına uğradı', 'Bağlantı yavaş görünüyor. Lütfen tekrar dene.');
         } else {
-          Alert.alert('Analiz başarısız', error instanceof Error ? error.message : 'Görsel analiz edilemedi, lütfen tekrar deneyin');
+          Alert.alert('Analiz başarısız', friendlyError(error, 'Görsel analiz edilemedi. Etiketleri elle doldurabilir veya tekrar deneyebilirsin.'));
         }
       }
     } finally {
@@ -63,56 +79,76 @@ export function AddClothingScreen({ navigation }: Props) {
         analysisController.current = null;
         setIsAnalyzing(false);
       }
+      analyzingRef.current = false;
     }
   }
 
   async function pickImage() {
-    if (isPicking || isSaving) return;
+    if (pickingRef.current || savingRef.current) return;
+    pickingRef.current = true;
     setIsPicking(true);
     try {
+      const capacity = await getWardrobeCapacity(userId);
+      if (!capacity.canAdd) {
+        track('wardrobe_limit_reached', { limit: capacity.limit ?? 50 });
+        navigation.navigate('Pro');
+        return;
+      }
       // The system photo picker does not need broad library permission for images.
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsMultipleSelection: false,
-        base64: true,
+        base64: false,
         quality: 0.8,
       });
-      if (!result.canceled && result.assets[0]?.uri) {
+      if (mountedRef.current && !result.canceled && result.assets[0]?.uri) {
+        analysisRequestId.current++;
+        analysisController.current?.abort();
         const asset = result.assets[0];
-        setImageUri(asset.uri);
-        setUploadMetadata({ fileName: asset.fileName, mimeType: asset.mimeType, fileSize: asset.fileSize });
-        base64Ref.current = asset.base64 ?? null;
-        if (asset.base64) {
-          void runAnalysis(asset.base64);
-        } else {
-          setAnalysisFailed(true);
-          Alert.alert('Fotoğraf okunamadı', 'Seçilen fotoğrafın analiz verisi hazırlanamadı. Lütfen başka bir fotoğraf seç.');
-        }
+        const image = await prepareImage(asset.uri, 1024, true);
+        if (!mountedRef.current) return;
+        setImageUri(image.uri);
+        setUploadMetadata({ mimeType: 'image/jpeg' });
+        base64Ref.current = image.base64 ?? null;
+        setTags({ tur: 'üst', renk: '', desen: 'düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false });
+        setAnalysisFailed(false);
+        setIsAnalyzing(false);
+        const confirmedPlan = plan ?? await refreshPlan();
+        if (mountedRef.current && confirmedPlan?.pro && image.base64) await runAnalysis(image.base64, true);
       }
-    } catch {
+    } catch (error) {
+      if (!mountedRef.current) return;
+      reportError('image_picker_or_capacity', error);
       Alert.alert(
-        'Galeri açılamadı',
-        'Fotoğraf seçimi başarısız oldu. Uygulamanın fotoğraf erişimini ayarlardan kontrol edebilirsin.',
+        'Fotoğraf seçimi başlatılamadı',
+        friendlyError(error, 'Gardırop kapasitesi veya fotoğraf erişimi doğrulanamadı. Tekrar deneyebilirsin.'),
         [
           { text: 'Tamam', style: 'cancel' },
           { text: 'Ayarları Aç', onPress: () => { void Linking.openSettings().catch(() => Alert.alert('Ayarlar açılamadı', 'Cihaz ayarlarını elle açabilirsin.')); } },
         ],
       );
     } finally {
-      setIsPicking(false);
+      pickingRef.current = false;
+      if (mountedRef.current) setIsPicking(false);
     }
   }
 
   async function saveClothing() {
-    if (!imageUri || !tags || isAnalyzing || isSaving) return;
+    if (!imageUri || !tags || analyzingRef.current || savingRef.current) return;
+    if (!tags.renk.trim() || !tags.desen.trim()) { Alert.alert('Etiketleri tamamla', 'Renk ve desen alanları boş bırakılamaz.'); return; }
+    savingRef.current = true;
     setIsSaving(true);
     try {
       await addClothingItem(userId, imageUri, tags, uploadMetadata);
+      track('wardrobe_item_added');
       navigation.goBack();
     } catch (error) {
-      Alert.alert('Kaydedilemedi', error instanceof Error ? error.message : 'Kıyafet kaydedilirken bir sorun oluştu. Lütfen tekrar dene.');
+      reportError('wardrobe_item_add', error);
+      if (error instanceof ProRequiredError) { track('wardrobe_limit_reached', { limit: 50 }); navigation.navigate('Pro'); return; }
+      Alert.alert('Kaydedilemedi', friendlyError(error, 'Kıyafet kaydedilemedi. Fotoğraf ve etiketlerin ekranda duruyor; tekrar deneyebilirsin.'));
     } finally {
-      setIsSaving(false);
+      savingRef.current = false;
+      if (mountedRef.current) setIsSaving(false);
     }
   }
 
@@ -128,7 +164,8 @@ export function AddClothingScreen({ navigation }: Props) {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.eyebrow}>GARDIROBUNA EKLE  /  01</Text>
         <Text style={styles.title}>Bir parça, bin ihtimal.</Text>
-        <Text style={styles.subtitle}>Seçtiğin fotoğraf OpenAI ile analiz edilir; ardından gardırobuna ekleyebilirsin.</Text>
+        <Text style={styles.subtitle}>{plan?.pro ? 'Fotoğrafını seç; izninle AI etiketlerini hazırlasın. Dilersen etiketleri değiştirebilirsin.' : 'Fotoğrafını seçip etiketlerini kendin doldur. Otomatik analiz Pro’da.'}</Text>
+        <PlanBanner />
 
         <Text style={styles.sectionLabel}>FOTOĞRAF</Text>
         <Pressable
@@ -155,7 +192,7 @@ export function AddClothingScreen({ navigation }: Props) {
 
         <View style={styles.tagsHeading}>
           <Text style={styles.sectionLabel}>ETİKETLER (ÖNİZLEME)</Text>
-          <Text style={styles.tagsHint}>{isAnalyzing ? 'Analiz sürüyor' : tags ? 'Analiz tamamlandı' : analysisFailed ? 'Analiz başarısız' : 'Fotoğraf seçildiğinde dolacak'}</Text>
+          <Text style={styles.tagsHint}>{isAnalyzing ? 'Analiz sürüyor' : tags ? 'Etiketleri düzenleyebilirsin' : 'Fotoğraf seçerek başla'}</Text>
         </View>
         {isAnalyzing && (
           <View style={styles.analysisBanner} accessibilityRole="progressbar" accessibilityLabel="Görsel analiz ediliyor">
@@ -164,21 +201,18 @@ export function AddClothingScreen({ navigation }: Props) {
           </View>
         )}
         <View style={styles.tagsCard}>
-          {[
-            { label: 'Tür', value: tags?.tur ?? '—' },
-            { label: 'Renk', value: tags?.renk ?? '—' },
-            { label: 'Desen', value: tags?.desen ?? '—' },
-            { label: 'Kesim', value: tags?.kesim ?? '—' },
-            { label: 'Parça', value: tags?.altTur ?? '—' },
-            { label: 'Kemer', value: tags?.tur === 'alt' ? (tags.kemerUygun ? 'Uygun' : 'Uygun değil') : '—' },
-          ].map((tag, index) => (
-            <View key={tag.label} style={[styles.tagRow, index < 5 && styles.tagRowBorder]}>
-              <Text style={styles.tagLabel}>{tag.label}</Text>
-              <Text style={styles.tagValue}>{tag.value}</Text>
-            </View>
-          ))}
+          {imageUri && tags && <>
+            <Text style={styles.tagLabel}>Tür</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, paddingVertical: 10 }}>{CLOTHING_TYPES.map((tur) => <Pressable key={tur} onPress={() => setTags({ ...tags, tur })}><Text style={{ color: tags.tur === tur ? colors.sage : colors.textMuted }}>{tur}</Text></Pressable>)}</View>
+            <Text style={styles.tagLabel}>Renk</Text><TextInput accessibilityLabel="Kıyafetin rengi" value={tags.renk} maxLength={80} onChangeText={(renk) => setTags({ ...tags, renk })} style={{ color: colors.text, minHeight: 44 }} placeholder="Örn. siyah" placeholderTextColor={colors.textFaint} />
+            <Text style={styles.tagLabel}>Desen</Text><TextInput accessibilityLabel="Kıyafetin deseni" value={tags.desen} maxLength={80} onChangeText={(desen) => setTags({ ...tags, desen })} style={{ color: colors.text, minHeight: 44 }} />
+            <Text style={styles.tagLabel}>Kesim</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, paddingVertical: 10 }}>{FIT_TYPES.map((kesim) => <Pressable key={kesim} onPress={() => setTags({ ...tags, kesim })}><Text style={{ color: tags.kesim === kesim ? colors.sage : colors.textMuted }}>{kesim}</Text></Pressable>)}</View>
+            <Text style={styles.tagLabel}>Parça</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, paddingVertical: 10 }}>{SUBTYPES.map((altTur) => <Pressable key={altTur} onPress={() => setTags({ ...tags, altTur })}><Text style={{ color: tags.altTur === altTur ? colors.sage : colors.textMuted }}>{altTur}</Text></Pressable>)}</View>
+            {tags.tur === 'alt' && <Pressable onPress={() => setTags({ ...tags, kemerUygun: !tags.kemerUygun })}><Text style={styles.tagValue}>Kemer: {tags.kemerUygun ? 'Uygun' : 'Uygun değil'}</Text></Pressable>}
+          </>}
+          {imageUri && plan?.pro && !isAnalyzing && <Pressable style={{ paddingVertical: 14 }} onPress={() => { if (base64Ref.current) void runAnalysis(base64Ref.current); }}><Text style={{ color: colors.sage }}>İzin vererek AI ile analiz et</Text></Pressable>}
         </View>
-        {analysisFailed && base64Ref.current && (
+        {plan?.pro && analysisFailed && base64Ref.current && (
           <Pressable accessibilityRole="button" accessibilityLabel="Görseli tekrar analiz et" onPress={() => { if (!isAnalyzing && base64Ref.current) void runAnalysis(base64Ref.current); }} style={({ pressed }) => [styles.retryAnalysis, pressed && styles.pressed]}>
             <Feather name="refresh-cw" size={15} color={colors.sage} />
             <Text style={styles.retryText}>Tekrar analiz et</Text>
@@ -186,8 +220,9 @@ export function AddClothingScreen({ navigation }: Props) {
         )}
 
         <View style={styles.saveArea}>
-          <PrimaryButton label={isSaving ? 'Kaydediliyor...' : 'Kaydet'} icon="check" disabled={!imageUri || !tags || isAnalyzing || isSaving} onPress={saveClothing} />
-          <Text style={styles.disclaimer}>Kaydetmek için görsel analizinin tamamlanmasını bekle.</Text>
+          <PrimaryButton label={isSaving ? 'Kaydediliyor...' : 'Kaydet'} icon="check" disabled={!imageUri || !tags || isPicking || isAnalyzing || isSaving} onPress={saveClothing} />
+          <Text style={styles.disclaimer}>Renk ve desen etiketlerini kontrol ederek kaydet.</Text>
+          {plan?.pro && <Text style={styles.disclaimer}>Malzeme, mevsim ve tarz gibi AI etiketleri fotoğraftan yapılan tahminlerdir; kesin bilgi sayılmaz.</Text>}
         </View>
       </ScrollView>
     </ScreenFrame>

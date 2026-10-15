@@ -14,6 +14,10 @@ const historyModule = { exports: {} };
 vm.runInNewContext(compile('src/data/outfitHistory.ts'), {
   module: historyModule, exports: historyModule.exports,
   require: (name) => {
+      if (name === './aiConsent') return { requireAiConsent: async () => {} };
+      if (name === './writeBudget') return {};
+      if (name === './paging') return {};
+      if (name === './firestoreQuery') return { getDocsWithIndexFallback: async () => ({ docs: [] }) };
     if (name === 'firebase/firestore') return { collection: () => ({}), deleteDoc: () => {}, doc: () => ({}), getDocs: () => {}, query: () => ({}), setDoc: () => {}, where: () => ({}) };
     if (name === '../config/firebase') return { firestore: {} };
     throw new Error(`Unexpected history import: ${name}`);
@@ -26,6 +30,9 @@ function load(workerPost) {
   vm.runInNewContext(compile('src/services/recommendOutfit.ts'), {
     module, exports: module.exports,
     require: (name) => {
+      if (name === './aiConsent') return { requireAiConsent: async () => {} };
+      if (name === './writeBudget') return {};
+      if (name === './paging') return {};
       if (name === '../data/outfitHistory') return historyData;
       if (name === './workerApi') return { workerPost };
       throw new Error(`Unexpected service import: ${name}`);
@@ -49,10 +56,10 @@ async function main() {
     assert.equal(endpoint, '/generate-outfit');
     assert.equal(body.message, 'Daha spor olsun');
     assert.equal(JSON.stringify(body).includes('imageUri'), false);
-    assert.equal(JSON.stringify(body).includes('desen'), false);
-    assert.deepEqual(Array.from(body.wardrobe, (item) => ({ ...item })), [
-      { id: '789', tur: 'alt', renk: 'lacivert', kesim: 'bilinmiyor', alt_tur: 'diğer', kemer_uygun: false, son_kullanim: 'hic', kullanim_sayisi: 0 },
-      { id: '321', tur: 'aksesuar', renk: 'zümrüt', kesim: 'bilinmiyor', alt_tur: 'diğer', kemer_uygun: false, son_kullanim: 'hic', kullanim_sayisi: 0 },
+    assert.equal(JSON.stringify(body).includes('private-photo'), false);
+    assert.deepEqual(JSON.parse(JSON.stringify(body.wardrobe)), [
+      { id: '789', tur: 'alt', renk: 'lacivert', desen: 'çizgili', kesim: 'bilinmiyor', alt_tur: 'diğer', kemer_uygun: false, mevsim: [], stil: [], resmiyet: 'bilinmiyor', malzeme_tahmini: 'bilinmiyor', son_kullanim: 'hic', kullanim_sayisi: 0 },
+      { id: '321', tur: 'aksesuar', renk: 'zümrüt', desen: 'düz', kesim: 'bilinmiyor', alt_tur: 'diğer', kemer_uygun: false, mevsim: [], stil: [], resmiyet: 'bilinmiyor', malzeme_tahmini: 'bilinmiyor', son_kullanim: 'hic', kullanim_sayisi: 0 },
     ]);
     return { recommendation: { mesaj: 'Bu parçalar çok yakışır.', secilen_idler: ['789', '321'] } };
   });

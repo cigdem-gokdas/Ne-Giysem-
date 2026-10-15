@@ -12,6 +12,9 @@ function load(workerPost) {
   vm.runInNewContext(compiled, {
     module, exports: module.exports,
     require: (name) => {
+      if (name === './aiConsent') return { requireAiConsent: async () => {} };
+      if (name === './writeBudget') return {};
+      if (name === './paging') return {};
       if (name === './workerApi') return { workerPost };
       if (name === '../data/wardrobe') return { FIT_TYPES: ['dar', 'normal', 'bol', 'bilinmiyor'], SUBTYPES: ['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'] };
       throw new Error(`Unexpected import: ${name}`);
@@ -29,7 +32,7 @@ async function main() {
     return { tags: { tur: 'üst', renk: 'Kahverengi', desen: 'Düz' } };
   });
   const tags = await analyze('user-1', 'ZmFrZQ==');
-  assert.deepEqual({ ...tags }, { tur: 'üst', renk: 'Kahverengi', desen: 'Düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(tags)), { tur: 'üst', renk: 'Kahverengi', desen: 'Düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false, secondaryColors: [], season: [], styleTags: [], formality: 'bilinmiyor', materialGuess: 'bilinmiyor' });
 
   await assert.rejects(() => analyze('user-1', ''), /Fotoğraf verisi okunamadı/);
 

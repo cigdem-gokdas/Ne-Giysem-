@@ -14,10 +14,11 @@ const state = {
   storage: {
     get: async (key) => values.get(key),
     put: async (key, value) => { values.set(key, value); },
+    delete: async (keys) => { for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key); },
   },
 };
 const moduleUnderTest = { exports: {} };
-vm.runInNewContext(compiled, { module: moduleUnderTest, exports: moduleUnderTest.exports, Request, Response, URL, Date, crypto: webcrypto });
+vm.runInNewContext(compiled, { require: name => name === './security' ? { HttpError: Error } : {}, module: moduleUnderTest, exports: moduleUnderTest.exports, Request, Response, URL, Date, crypto: webcrypto });
 
 async function call(limiter, path, requestId) {
   return limiter.fetch(new Request(`https://rate-limit/${path}`, { method: 'POST', body: JSON.stringify(requestId ? { requestId } : {}) }));
@@ -39,13 +40,14 @@ async function main() {
   values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: 0 });
   const retry = await (await call(limiter, 'reserve')).json();
   await call(limiter, 'failure', retry.requestId);
-  assert.equal(values.get('usage').count, 7);
-  assert.equal(values.get('usage').lastRequestAt, 0);
+  assert.equal(values.get('usage').count, 8);
+  assert.ok(values.get('usage').lastRequestAt > 0);
+  assert.equal((await call(limiter, 'reserve')).status, 429);
   values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: Date.now() - 7_000 });
   assert.equal((await call(limiter, 'reserve')).status, 429);
   values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: Date.now() - 9_000 });
   assert.equal((await call(limiter, 'reserve')).status, 200);
-  values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: Date.now() - 40_000, pending: { id: 'stale', previousDate: new Date().toISOString().slice(0, 10), previousCount: 7, previousLastRequestAt: 0 } });
+  values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: Date.now() - 70_000, pending: { id: 'stale', previousDate: new Date().toISOString().slice(0, 10), previousCount: 7, previousLastRequestAt: 0 } });
   assert.equal((await call(limiter, 'reserve')).status, 200);
   console.log('Worker Durable Object 8 saniye/25 istek kota kontrolleri geçti.');
 }

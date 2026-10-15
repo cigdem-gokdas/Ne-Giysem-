@@ -2,9 +2,14 @@ export type ClothingSummary = {
   id: string;
   tur: string;
   renk: string;
+  desen: string;
   kesim: string;
   alt_tur: string;
   kemer_uygun: boolean;
+  mevsim: string[];
+  stil: string[];
+  resmiyet: string;
+  malzeme_tahmini: string;
   son_kullanim: number | 'hic';
   kullanim_sayisi: number;
 };

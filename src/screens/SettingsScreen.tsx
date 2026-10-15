@@ -1,8 +1,11 @@
+import { PlanBanner } from '../components/PlanBanner';
+import { LegalLinks } from '../components/LegalLinks';
+import { getAiConsent, setAiConsent } from '../services/aiConsent';
 import { Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
 import { useAuth, useUserId } from '../auth/AuthContext';
@@ -12,6 +15,9 @@ import { resetLocalData } from '../data/wardrobe';
 import { changePassword } from '../data/auth';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
+import { useSubscription } from '../billing/SubscriptionContext';
+import { withPurchases } from '../billing/purchases';
+import { friendlyError, reportError, track } from '../services/telemetry';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
 
@@ -19,6 +25,10 @@ export function SettingsScreen() {
   const userId = useUserId();
   const { user, logout, deleteAccount } = useAuth();
   const navigation = useNavigation<Navigation>();
+  const { status: subscription, refresh: refreshSubscription } = useSubscription();
+  const [subscriptionBusy, setSubscriptionBusy] = useState(false);
+  const [aiAllowed, setAiAllowed] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [share, setShare] = useState<ShareSettings | null>(null);
   const [busyShare, setBusyShare] = useState<'gallery' | 'boards' | null>(null);
@@ -39,6 +49,7 @@ export function SettingsScreen() {
 
   useEffect(() => {
     let active = true;
+    void getAiConsent(userId).then((value) => { if (active) setAiAllowed(value); }).catch(() => undefined);
     getShareSettings(userId).then((settings) => {
       if (active) setShare(settings);
     }).catch(() => { if (active) Alert.alert('Ayarlar açılamadı', 'Paylaşım tercihleri yüklenemedi.'); });
@@ -76,7 +87,7 @@ export function SettingsScreen() {
     setChangingPassword(true); setPasswordError('');
     try {
       await changePassword(userId, currentPassword, newPassword);
-      setPasswordModal(false);
+      setPasswordModal(false); setCurrentPassword(''); setNewPassword(''); setRepeatPassword('');
       Alert.alert('Şifren değişti', 'Yeni şifren bir sonraki girişinde hazır.');
     } catch (cause) { setPasswordError(cause instanceof Error ? cause.message : 'Şifre değiştirilemedi.'); }
     finally { setChangingPassword(false); }
@@ -121,6 +132,7 @@ export function SettingsScreen() {
     setDeleteError('');
     try {
       await deleteAccount(user?.authProvider === 'local' ? deletePassword : undefined);
+      track('account_deleted');
     } catch (cause) {
       setDeleteError(cause instanceof Error ? cause.message : 'Hesap silinemedi. Lütfen tekrar dene.');
       setDeletingAccount(false);
@@ -130,6 +142,25 @@ export function SettingsScreen() {
   async function handleLogout() {
     try { await logout(); }
     catch (cause) { Alert.alert('Çıkış yapılamadı', cause instanceof Error ? cause.message : 'Lütfen tekrar dene.'); }
+  }
+
+  async function restorePurchases() {
+    if (subscriptionBusy) return;
+    setSubscriptionBusy(true);
+    track('restore_purchase');
+    try {
+      await withPurchases(userId, sdk => sdk.restorePurchases());
+      const plan = await refreshSubscription(true);
+      Alert.alert(plan?.pro ? 'Pro üyeliğin geri yüklendi' : 'Aktif üyelik bulunamadı', plan?.pro ? 'Ne Giysem Pro yeniden etkin.' : 'Bu mağaza hesabına bağlı aktif bir Pro aboneliği bulunamadı.');
+    } catch (error) {
+      reportError('settings_restore_purchase', error);
+      Alert.alert('Geri yüklenemedi', friendlyError(error, 'Satın alımlar şu anda geri yüklenemedi. Biraz sonra tekrar dene.'));
+    } finally { setSubscriptionBusy(false); }
+  }
+
+  function manageSubscription() {
+    const url = Platform.OS === 'ios' ? 'https://apps.apple.com/account/subscriptions' : 'https://play.google.com/store/account/subscriptions';
+    void Linking.openURL(url).catch((error) => { reportError('manage_subscription', error); Alert.alert('Mağaza açılamadı', 'Abonelik ayarlarını cihazındaki mağaza uygulamasından açabilirsin.'); });
   }
 
   function confirmAccountDeletion() {
@@ -143,7 +174,7 @@ export function SettingsScreen() {
     }
     Alert.alert(
       'Hesabın kalıcı olarak silinsin mi?',
-      'Profilin, gardırobun, sohbetlerin, fotoğrafların ve sosyal etkileşimlerin bu cihazdan kalıcı olarak kaldırılacak.',
+      'Profilin, gardırobun, sohbetlerin, fotoğrafların ve sosyal etkileşimlerin buluttan kalıcı olarak kaldırılacak. İşlem tamamlanana kadar uygulamayı açık tut. Pro aboneliğin varsa hesabı silmek aboneliği iptal etmez; önce mağaza abonelik ayarlarından iptal edebilirsin.',
       [
         { text: 'Vazgeç', style: 'cancel' },
         { text: 'Hesabı Sil', style: 'destructive', onPress: () => { void performAccountDeletion(); } },
@@ -159,6 +190,15 @@ export function SettingsScreen() {
       </Pressable>
       <ScreenHeading eyebrow="KİŞİSEL ALAN" title="Ayarlar" subtitle="Gardırobunun küçük düzenlemeleri." />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <PlanBanner />
+        <View style={styles.sectionCard}>
+          <Text style={styles.overline}>NE GİYSEM PRO</Text>
+          <Text style={styles.sectionTitle}>{subscription?.pro ? 'Üyeliğin etkin' : 'Ücretsiz plan'}</Text>
+          <Text style={styles.description}>{subscription?.pro ? 'AI etiketleme ve stil danışmanına erişebilirsin.' : `${subscription?.freeChatsRemaining ?? 0} ücretsiz AI sohbet hakkın kaldı.`}</Text>
+          <Pressable style={styles.passwordButton} onPress={() => navigation.navigate('Pro')} accessibilityRole="button"><Feather name="star" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{subscription?.pro ? 'Pro ayrıntılarını gör' : 'Pro’ya geç'}</Text></Pressable>
+          <Pressable style={[styles.passwordButton, subscriptionBusy && styles.disabled]} disabled={subscriptionBusy} onPress={() => { void restorePurchases(); }} accessibilityRole="button"><Feather name="refresh-cw" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{subscriptionBusy ? 'Geri yükleniyor…' : 'Satın alımları geri yükle'}</Text></Pressable>
+          <Pressable style={styles.passwordButton} onPress={manageSubscription} accessibilityRole="button"><Feather name="settings" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>Aboneliği yönet</Text></Pressable>
+        </View>
         <View style={styles.sectionCard}>
           <Text style={styles.overline}>KEŞFET GİZLİLİĞİ</Text>
           <Text style={styles.sectionTitle}>Paylaşım tercihleri</Text>
@@ -173,7 +213,7 @@ export function SettingsScreen() {
             <Text style={styles.overline}>AKTİF OTURUM</Text>
             <Text style={styles.cardTitle}>{user?.username}</Text>
             {user?.email && <Text style={styles.accountEmail}>{user.email}</Text>}
-            <Pressable style={[styles.passwordButton, user?.authProvider === 'google' && styles.disabled]} onPress={openPasswordModal} disabled={user?.authProvider === 'google'} accessibilityRole="button" accessibilityLabel="Şifremi Değiştir"><Feather name="key" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{user?.authProvider === 'google' ? 'Şifre Google tarafından yönetiliyor' : 'Şifremi Değiştir'}</Text></Pressable>
+            <Pressable style={[styles.passwordButton, user?.authProvider !== 'local' && styles.disabled]} onPress={openPasswordModal} disabled={user?.authProvider !== 'local'} accessibilityRole="button" accessibilityLabel="Şifremi Değiştir"><Feather name="key" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{user?.authProvider !== 'local' ? 'Şifre giriş sağlayıcın tarafından yönetiliyor' : 'Şifremi Değiştir'}</Text></Pressable>
             <Pressable style={styles.logoutButton} onPress={() => { void handleLogout(); }} accessibilityRole="button" accessibilityLabel="Çıkış Yap"><Feather name="log-out" size={15} color={colors.lavender} /><Text style={styles.logoutText}>Çıkış Yap</Text></Pressable>
           </View>
         </View>
@@ -202,6 +242,12 @@ export function SettingsScreen() {
           </Pressable>
         </View>
 
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Gizlilik ve AI izni</Text>
+          <Text style={styles.description}>AI kullanırken fotoğrafın veya kombin isteğin ve gardırop etiketlerin OpenAI ile paylaşılır. İzni kapattığında yeni AI isteği gönderilmez.</Text>
+          <View style={styles.toggleRow}><Text style={styles.toggleTitle}>OpenAI ile veri paylaşımı</Text><Switch value={aiAllowed} disabled={aiBusy} onValueChange={(value) => { setAiBusy(true); void setAiConsent(userId, value).then(() => setAiAllowed(value)).catch(() => Alert.alert('İzin güncellenemedi', 'Tekrar dene.')).finally(() => setAiBusy(false)); }} /></View>
+          <LegalLinks />
+        </View>
         <View style={styles.modelCard}>
           <View style={styles.modelIcon}><Feather name="star" size={19} color={colors.sage} /></View>
           <View style={styles.cardText}>
@@ -226,11 +272,11 @@ export function SettingsScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.overline}>HESAP GÜVENLİĞİ</Text>
             <Text style={styles.modalTitle}>Şifremi değiştir</Text>
-            <Text style={styles.modalHint}>Mevcut şifreni doğrula ve en az 6 karakterli yeni şifreni seç.</Text>
+            <Text style={styles.modalHint}>Mevcut şifreni doğrula ve en az 12 karakterli yeni şifreni seç.</Text>
             <Text style={styles.modalLabel}>MEVCUT ŞİFRE</Text>
             <TextInput style={styles.passwordInput} value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry placeholder="Mevcut şifren" placeholderTextColor={colors.textFaint} />
             <Text style={styles.modalLabel}>YENİ ŞİFRE</Text>
-            <TextInput style={styles.passwordInput} value={newPassword} onChangeText={setNewPassword} secureTextEntry placeholder="En az 6 karakter" placeholderTextColor={colors.textFaint} />
+            <TextInput style={styles.passwordInput} value={newPassword} onChangeText={setNewPassword} secureTextEntry placeholder="En az 12 karakter" placeholderTextColor={colors.textFaint} />
             <Text style={styles.modalLabel}>YENİ ŞİFRE TEKRARI</Text>
             <TextInput style={styles.passwordInput} value={repeatPassword} onChangeText={setRepeatPassword} secureTextEntry placeholder="Yeni şifreni tekrar yaz" placeholderTextColor={colors.textFaint} />
             {!!passwordError && <Text style={styles.passwordError} accessibilityRole="alert">{passwordError}</Text>}

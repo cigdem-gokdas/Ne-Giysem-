@@ -1,3 +1,5 @@
+import { ProScreen } from '../screens/ProScreen';
+import { DeletionRecoveryScreen } from '../screens/DeletionRecoveryScreen';
 import { Feather } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -17,11 +19,11 @@ import { UserProfileScreen } from '../screens/UserProfileScreen';
 import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
 import { VerifyEmailScreen } from '../screens/VerifyEmailScreen';
 
-export type RootStackParamList = { MainTabs: undefined; AddClothing: undefined; Settings: undefined; UserProfile: { userId: string } };
+export type RootStackParamList = { Pro: undefined; MainTabs: undefined; AddClothing: undefined; Settings: undefined; UserProfile: { userId: string } };
 export type AuthStackParamList = {
   Auth: undefined;
   ForgotPassword: undefined;
-  VerifyEmail: { username: string; email: string; password: string; acceptedTerms: true };
+  VerifyEmail: undefined;
 };
 export type MainTabParamList = { Discover: undefined; Wardrobe: undefined; OutfitChat: undefined; Profile: undefined };
 
@@ -54,7 +56,8 @@ function MainTabs() {
 
 function MainStack() {
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
+    <Stack.Navigator initialRouteName="MainTabs" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
+      <Stack.Screen name="Pro" component={ProScreen} />
       <Stack.Screen name="MainTabs" component={MainTabs} />
       <Stack.Screen name="AddClothing" component={AddClothingScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
@@ -64,7 +67,8 @@ function MainStack() {
 }
 
 function AuthStack() {
-  return <Auth.Navigator screenOptions={{ headerShown: false }}>
+  const { verificationEmail } = useAuth();
+  return <Auth.Navigator key={verificationEmail ? 'verify' : 'auth'} initialRouteName={verificationEmail ? 'VerifyEmail' : 'Auth'} screenOptions={{ headerShown: false }}>
     <Auth.Screen name="Auth" component={AuthScreen} />
     <Auth.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
     <Auth.Screen name="VerifyEmail" component={VerifyEmailScreen} />
@@ -84,6 +88,7 @@ export function AppNavigator() {
       </ScreenFrame>
     );
   }
+  if (user?.deletionPending) return <DeletionRecoveryScreen />;
   return user ? <MainStack key={user.id} /> : <AuthStack />;
 }
 

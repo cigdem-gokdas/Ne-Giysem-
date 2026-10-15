@@ -3,6 +3,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
+import { authErrorMessage } from '../auth/authErrors';
 import { ensurePasswordResettable } from '../data/auth';
 import type { AuthStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
@@ -19,8 +20,8 @@ export function ForgotPasswordScreen({ navigation }: Props) {
     setBusy(true); setError('');
     try {
       await ensurePasswordResettable(identifier);
-      Alert.alert('Bağlantı gönderildi', 'Firebase şifre sıfırlama bağlantısı e-posta adresine gönderildi.', [{ text: 'Girişe dön', onPress: () => navigation.popToTop() }]);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Kod oluşturulamadı.'); }
+      Alert.alert('Bağlantı gönderildi', 'Bu adresle bir hesap varsa şifre sıfırlama bağlantısı gönderildi. Gelen kutunu ve spam klasörünü kontrol et.', [{ text: 'Girişe dön', onPress: () => navigation.popToTop() }]);
+    } catch (cause) { setError(authErrorMessage(cause)); }
     finally { setBusy(false); }
   }
 
@@ -31,7 +32,7 @@ export function ForgotPasswordScreen({ navigation }: Props) {
         <View style={styles.icon}><Feather name="key" size={29} color={colors.pink} /></View>
         <Text style={styles.eyebrow}>HESAP KURTARMA</Text>
         <Text style={styles.title}>Anahtarını yenileyelim.</Text>
-        <Text style={styles.subtitle}>E-posta adresini yaz; Firebase sana güvenli bir sıfırlama bağlantısı göndersin.</Text>
+        <Text style={styles.subtitle}>E-posta adresini yaz; sana güvenli bir sıfırlama bağlantısı gönderelim.</Text>
         <View style={styles.card}>
           <Text style={styles.label}>E-POSTA</Text>
           <TextInput style={styles.input} value={identifier} onChangeText={setIdentifier} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} />

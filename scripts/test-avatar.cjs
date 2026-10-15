@@ -15,6 +15,9 @@ async function main() {
     module: moduleUnderTest,
     exports: moduleUnderTest.exports,
     require: (name) => {
+      if (name === './paging') return {};
+      if (name === './writeBudget') return { limitedUpdate: async (ref, data) => calls.push(['firestore', ref, data]) };
+      if (name === './firestoreQuery') return { getDocsWithIndexFallback: async () => ({ docs: [] }) };
       if (name === 'firebase/firestore') return {
         doc: (_db, collection, id) => ({ collection, id }),
         getDoc: async (ref) => {

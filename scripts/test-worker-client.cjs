@@ -11,11 +11,11 @@ const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src
 function load(fetchMock, tokenCalls, uploadMock = async () => { throw new Error('Unexpected upload'); }) {
   const module = { exports: {} };
   vm.runInNewContext(compiled, {
-    module, exports: module.exports, fetch: fetchMock,
+    module, exports: module.exports, fetch: fetchMock, URL, AbortController, setTimeout, clearTimeout,
     require: (name) => {
       if (name === '../config/firebase') return { firebaseAuth: { currentUser: { uid: 'user-1', getIdToken: async (refresh) => { tokenCalls.push(refresh); return refresh ? 'fresh-token' : 'token'; } } } };
       if (name === '../config/env') return { WORKER_URL: 'https://worker.example/' };
-      if (name === 'expo-file-system/legacy') return { uploadAsync: uploadMock, FileSystemUploadType: { MULTIPART: 1 } };
+      if (name === 'expo-file-system/legacy') return { createUploadTask: (...args) => ({ uploadAsync: () => uploadMock(...args), cancelAsync: async () => {} }), FileSystemUploadType: { MULTIPART: 1 } };
       throw new Error(`Unexpected import: ${name}`);
     },
   });
