@@ -7,6 +7,12 @@ import { AppNavigator } from './src/navigation/AppNavigator';
 import { AuthProvider } from './src/auth/AuthContext';
 import { colors } from './src/theme';
 import { CloudUploadModal } from './src/components/CloudUploadModal';
+import { initAppCheck } from './src/services/appCheck';
+import { registerTelemetry } from './src/services/telemetry';
+
+// Crash reporting starts only when EXPO_PUBLIC_SENTRY_DSN is set; App Check is a documented no-op for now.
+registerTelemetry();
+initAppCheck();
 
 const navigationTheme = {
   ...DarkTheme,
@@ -25,12 +31,12 @@ export default function App() {
     <SafeAreaProvider>
       <AuthProvider>
         <SubscriptionProvider>
-        <NavigationContainer theme={navigationTheme}>
-          <StatusBar style="light" />
-          <AppNavigator />
-          <CloudUploadModal />
-          <WardrobeOpening />
-        </NavigationContainer>
+          <NavigationContainer theme={navigationTheme}>
+            <StatusBar style="light" />
+            <AppNavigator />
+            <CloudUploadModal />
+            <WardrobeOpening />
+          </NavigationContainer>
         </SubscriptionProvider>
       </AuthProvider>
     </SafeAreaProvider>

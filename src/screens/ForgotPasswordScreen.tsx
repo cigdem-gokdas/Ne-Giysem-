@@ -26,18 +26,18 @@ export function ForgotPasswordScreen({ navigation }: Props) {
   }
 
   return <ScreenFrame includeBottom>
-    <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Girişe dön</Text></Pressable>
+        <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Girişe dön"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Girişe dön</Text></Pressable>
         <View style={styles.icon}><Feather name="key" size={29} color={colors.pink} /></View>
         <Text style={styles.eyebrow}>HESAP KURTARMA</Text>
         <Text style={styles.title}>Anahtarını yenileyelim.</Text>
         <Text style={styles.subtitle}>E-posta adresini yaz; sana güvenli bir sıfırlama bağlantısı gönderelim.</Text>
         <View style={styles.card}>
           <Text style={styles.label}>E-POSTA</Text>
-          <TextInput style={styles.input} value={identifier} onChangeText={setIdentifier} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} />
+          <TextInput style={styles.input} value={identifier} onChangeText={setIdentifier} keyboardType="email-address" autoComplete="email" autoCapitalize="none" autoCorrect={false} placeholder="ornek@eposta.com" placeholderTextColor={colors.textFaint} accessibilityLabel="E-posta" />
           {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void sendCode(); }} disabled={busy} accessibilityRole="button">
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void sendCode(); }} disabled={busy} accessibilityRole="button" accessibilityLabel="Sıfırlama bağlantısı gönder">
             {busy ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.buttonText}>Sıfırlama Bağlantısı Gönder</Text>}
           </Pressable>
         </View>
@@ -57,7 +57,6 @@ const styles = StyleSheet.create({
   card: { padding: 21, borderRadius: 19, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   label: { color: colors.gold, fontFamily: fonts.sans, fontSize: 9, fontWeight: '700', letterSpacing: 1.5, marginTop: 13, marginBottom: 7 },
   input: { minHeight: 48, paddingHorizontal: 14, borderRadius: 11, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundRaised, color: colors.text, fontFamily: fonts.sans, fontSize: 13 },
-  readOnly: { color: colors.textMuted, opacity: 0.8 },
   error: { color: colors.pink, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18, marginTop: 13 },
   button: { minHeight: 49, marginTop: 19, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.sage },
   buttonText: { color: colors.ink, fontFamily: fonts.sans, fontSize: 13, fontWeight: '700' }, disabled: { opacity: 0.5 },

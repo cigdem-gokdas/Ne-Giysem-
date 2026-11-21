@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { SUPPORT_EMAIL } from '../config/env';
+import { FREE_CHAT_LIMIT, FREE_WARDROBE_LIMIT } from '../config/plans';
 import { colors } from '../theme';
 
 export const PRIVACY_TEXT = `Hesabın için Firebase Authentication kullanılır. E-posta adresin kimlik doğrulama için işlenir; şifren uygulamanın veritabanında saklanmaz. Profil, gardırop etiketleri, sohbet ve paylaşım kayıtları Google Firebase üzerinde; seçtiğin fotoğraflar Cloudflare üzerinde saklanır.
@@ -18,7 +20,7 @@ const TERMS = `Ne giysem? gardırop düzenleme ve stil önerisi uygulamasıdır.
 
 Başkasına ait hesapları kullanma; izinsiz kişisel veri, nefret, taciz, şiddet, cinsel istismar veya hak ihlali içeren içerik paylaşma. Uygunsuz içerikleri kullanıcı menüsünden bildir; istemediğin etkileşimleri engelle. Bildirilen içerikler incelenerek kaldırılabilir.
 
-Ücretsiz hesap 50 kıyafet ve hesap başına toplam 3 başarılı AI sohbet isteği içerir; kombin değiştirme istekleri de bu hakka dahildir. Fotoğraf analizi Pro gerektirir. Pro’da kıyafet sayısı sınırı yoktur; günlük AI, yükleme ve ortak hizmet kapasitesi sınırları geçerlidir. Kesintiye uğrayıp sonucu belirsiz kalan bir AI isteği hak tüketebilir. Abonelik iptal edilmedikçe otomatik yenilenir ve mağaza ayarlarından yönetilir. Hesabı silmek mağaza aboneliğini iptal etmez.
+Ücretsiz hesap ${FREE_WARDROBE_LIMIT} kıyafet ve hesap başına toplam ${FREE_CHAT_LIMIT} başarılı AI sohbet isteği içerir; kombin değiştirme istekleri de bu hakka dahildir. Fotoğraf analizi Pro gerektirir. Pro’da kıyafet sayısı sınırı yoktur; günlük AI, yükleme ve ortak hizmet kapasitesi sınırları geçerlidir. Kesintiye uğrayıp sonucu belirsiz kalan bir AI isteği hak tüketebilir. Abonelik iptal edilmedikçe otomatik yenilenir ve mağaza ayarlarından yönetilir. Hesabı silmek mağaza aboneliğini iptal etmez.
 
 Hesap güvenliğinden sorumlusun. Güçlü ve başka yerde kullanmadığın bir şifre seç. Hesabını ve verilerini uygulama içinden silebilirsin.`;
 export function LegalLinks() {
@@ -27,15 +29,17 @@ export function LegalLinks() {
   const support = SUPPORT_EMAIL;
   return <>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginVertical: 12 }}>
-      <Pressable accessibilityRole="button" onPress={() => setPage('privacy')}><Text style={{ color: colors.sage }}>Gizlilik</Text></Pressable>
-      <Pressable accessibilityRole="button" onPress={() => setPage('terms')}><Text style={{ color: colors.sage }}>Kullanım koşulları</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Gizlilik metnini aç" onPress={() => setPage('privacy')}><Text style={{ color: colors.sage }}>Gizlilik</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Kullanım koşullarını aç" onPress={() => setPage('terms')}><Text style={{ color: colors.sage }}>Kullanım koşulları</Text></Pressable>
       {!!support && <Pressable accessibilityRole="link" onPress={() => { void Linking.openURL(`mailto:${support}`).catch(() => undefined); }}><Text style={{ color: colors.sage }}>Destek</Text></Pressable>}
     </View>
     <Modal visible={page !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setPage(null)}>
-      <View style={{ flex: 1, backgroundColor: colors.background, padding: 24, paddingTop: 50 }}>
-        <Pressable onPress={() => setPage(null)} accessibilityRole="button"><Text style={{ color: colors.sage, paddingVertical: 12 }}>Kapat</Text></Pressable>
+      <SafeAreaProvider>
+      <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={{ flex: 1, backgroundColor: colors.background, padding: 24 }}>
+        <Pressable onPress={() => setPage(null)} accessibilityRole="button" accessibilityLabel="Kapat"><Text style={{ color: colors.sage, paddingVertical: 12 }}>Kapat</Text></Pressable>
         <ScrollView>{publicPolicy?.startsWith('https://') && <Pressable accessibilityRole="link" onPress={() => { void Linking.openURL(publicPolicy).catch(() => undefined); }}><Text style={{ color: colors.sage, paddingVertical: 12 }}>Yayımlanmış metni aç</Text></Pressable>}<Text style={{ color: colors.text, fontSize: 24, marginBottom: 20 }}>{page === 'privacy' ? 'Gizlilik' : 'Kullanım koşulları'}</Text><Text style={{ color: colors.text, lineHeight: 24 }}>{page === 'privacy' ? PRIVACY_TEXT : TERMS}</Text>{!!support && <Text style={{ color: colors.text, marginTop: 20 }}>İletişim: {support}</Text>}</ScrollView>
-      </View>
+      </SafeAreaView>
+      </SafeAreaProvider>
     </Modal>
   </>;
 }

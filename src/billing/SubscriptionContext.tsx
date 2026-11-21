@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
 import { AppState } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { workerPost } from '../services/workerApi';
@@ -10,6 +10,7 @@ export function SubscriptionProvider({ children }: PropsWithChildren) {
   const currentUid = useRef(uid); currentUid.current = uid;
   const generation = useRef(0);
   const [snapshot, setSnapshot] = useState<{ uid: string; status: SubscriptionStatus } | null>(null);
+  const snapshotRef = useRef(snapshot); snapshotRef.current = snapshot;
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async (force = false) => {
     const request = ++generation.current;
@@ -19,11 +20,18 @@ export function SubscriptionProvider({ children }: PropsWithChildren) {
       if (currentUid.current !== uid || request !== generation.current) return null;
       setSnapshot({ uid, status }); setError(null); return status;
     } catch (err) {
-      if (currentUid.current === uid && request === generation.current) { setSnapshot(null); setError(err instanceof Error ? err.message : 'Abonelik kontrol edilemedi.'); }
+      if (currentUid.current === uid && request === generation.current) {
+        // A transient failure must not demote a verified Pro user: keep the last known status and only
+        // surface an error when nothing is known yet.
+        if (snapshotRef.current?.uid === uid) setError(null);
+        else { setSnapshot(null); setError(err instanceof Error ? err.message : 'Abonelik kontrol edilemedi.'); }
+      }
       return null;
     }
   }, [uid]);
   useEffect(() => { setSnapshot(null); setError(null); void refresh(); const listener = AppState.addEventListener('change', state => { if (state === 'active') void refresh(); }); return () => { generation.current++; listener.remove(); }; }, [refresh]);
-  return <Context.Provider value={{ status: snapshot?.uid === uid ? snapshot?.status ?? null : null, error, refresh }}>{children}</Context.Provider>;
+  const status = snapshot && snapshot.uid === uid ? snapshot.status : null;
+  const value = useMemo(() => ({ status, error, refresh }), [status, error, refresh]);
+  return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 export function useSubscription() { const value = useContext(Context); if (!value) throw new Error('SubscriptionProvider gerekli.'); return value; }

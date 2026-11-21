@@ -1,6 +1,6 @@
 # Güvenlik, maliyet ve App Store hazırlığı — 3 Ekim 2026
 
-Bu çalışma kaynak kodu ve yerel testleri kapsar. Canlı Firebase / Cloudflare / OpenAI konsollarının planları ve secretları doğrulanmadı; sunucuya veya App Store'a yayın yapılmadı. Tam güvenlik veya sıfır ek fatura garantisi verilmez. Başlangıç OpenAI bütçesi kullanıcı tercihiyle 5 USD/ay, destek e-postası cigdemgokdas01@gmail.com olarak hazırlandı.
+Bu çalışma kaynak kodu ve yerel testleri kapsar. Canlı Firebase / Cloudflare / OpenAI konsollarının planları ve secretları doğrulanmadı; sunucuya veya App Store'a yayın yapılmadı. Tam güvenlik veya sıfır ek fatura garantisi verilmez. Başlangıç OpenAI bütçesi kullanıcı tercihiyle 5 USD/ay, destek e-postası support@negiysem.app olarak hazırlandı.
 
 ## Düzeltilen bulgular
 
@@ -40,14 +40,62 @@ Bu çalışma kaynak kodu ve yerel testleri kapsar. Canlı Firebase / Cloudflare
 
 Güvenilmeyen projeleri/desenleri veya sertifikaları bu build araçlarıyla işlemeyin. Yama yayımlandığında güncelleyin ve audit + export'u yeniden çalıştırın. Yayın öncesi kalan riskin kapsamı ayrıca değerlendirilmelidir.
 
+## Bu turda giderilenler
+
+Sertleştirme turunun özeti (kimlikler iç denetim listesindendir; ayrıntı için ilgili commit/diff'e bakın).
+
+**Güvenlik (S\*)**
+- S1: `/media/` bütçe sayacı artık nesne varlığı kontrolünden sonra tüketilir; anonim sahte isteklerle bütün görseller kapatılamaz.
+- S2-S5: Firestore kuralları sıkılaştırıldı (medya URL'si Worker host'una sabitlendi, sunucu zaman damgası, `users` listeleme ve engel kayıtlarının görünürlüğü).
+- S6: Hesap silme, hakkında açılmış raporları silmez (raporlayan anonimleştirilir).
+- S7: Yüklemede uzantı doğrulanmış MIME türünden türetilir.
+- S8: Worker tarafında App Check soft mod doğrulaması eklendi ([APP_CHECK_SETUP.md](APP_CHECK_SETUP.md)); native istemci adımı açık.
+- S9: `FIREBASE_WEB_API_KEY` public web anahtarıdır; Worker değişkeni olarak kalır, **GCP'de API kısıtlaması gerekir** (aşağıda açık adım).
+- S10: R2 CORS örneğinden kullanılmayan `PUT` çıkarıldı.
+- S11: `sanitize` döngüsel/kararlı hale getirildi, görünmez ve bidi karakterler temizlenir, kullanıcı adı ve etiketlere uygulanır.
+- S12-S13: Kalan uçlara kullanıcı başı hız sınırı; hata mesajları genelleştirildi.
+
+**Backend (B\*)**
+- B1: Şifre + Apple bağlı kullanıcıların hesap silmesi düzeltildi (Apple yetkilendirme kodu gönderilir).
+- B2/B3: AI rezervasyonu, kullanıcı/global limitler ve depolama sınırı Worker değişkenleri oldu (`AI_RESERVATION_CENTS`, `AI_USER_DAILY_LIMIT`, `UPLOAD_*`, `STORAGE_MONTHLY_BYTES_LIMIT`); depolama aylık sayaçtır ve silmede iade edilir.
+- B4-B6, B8: Durable Object kilit kapsamı, silme süresi/parti yapısı, idempotent kıyafet oluşturma ve hata yolları düzeltildi.
+- B7, B10-B13, B16: İstemci tutarlılığı (Firestore-önce silme, 429/pro_required eşleme, transaction'lı beğeni/sohbet, bozuk SecureStore manifest onarımı).
+- B9: Süresiz/promosyon entitlement'lar Pro sayılır.
+- B14: İsteğe bağlı Sentry (`EXPO_PUBLIC_SENTRY_DSN`) ile çökme raporlama.
+- B15: EAS ortam değişkenleri belgelendi ve `eas.json` profillerine `environment` eklendi.
+
+**Yeni özellikler / araçlar**
+- UGC moderasyonu: gönderi/yorum bildirme ve kelime filtresi (aşağıda "İçerik moderasyonu").
+- OpenAI model adı `OPENAI_MODEL` değişkeni oldu.
+- ESLint ve GitHub Actions CI (`.github/workflows/ci.yml`).
+- Repo hijyeni: izlenen boş `Icon\r` dosyası kaldırıldı, `.gitignore` güncellendi.
+
+**Hâlâ elle yapılacak konsol adımları (açık)**
+- GCP Console: `FIREBASE_WEB_API_KEY` anahtarını yalnızca Identity Toolkit API ile kısıtla.
+- `ALLOWED_ORIGINS` yer tutucusunu ve R2 CORS ayarını gerçek değerlerle doldur.
+- `FIREBASE_PROJECT_NUMBER` ayarla; App Check native istemcisini ekle, ölçümden sonra `APP_CHECK_ENFORCE="true"`.
+- Rules/indexes ve Worker'ı koordineli yayımla (yeni kurallar eski istemcileri kırabilir).
+- OpenAI hard spend limit, Spark/Free plan doğrulaması, yasal metin URL'leri, RevenueCat anahtarı.
+- Moderasyon sürecini işlet (aşağıda).
+
+## İçerik moderasyonu (Apple 1.2)
+
+Uygulamada kullanıcılar gönderi ve yorumları **bildirebilir**, kullanıcıları engelleyebilir; yayımlanan metinler temel bir **kelime filtresinden** geçer. Bildirimler Firestore `reports` koleksiyonuna yazılır. Kod otomatik insan incelemesi sağlamaz; işletmecinin şu süreci yürütmesi gerekir:
+
+1. `reports` koleksiyonunu düzenli (en az günlük, Apple için hedef 24 saat) Firebase Console veya admin betiğiyle gözden geçir.
+2. Kuralı ihlal eden gönderi/yorumu sil, tekrar eden ihlalde kullanıcıyı uzaklaştır (hesabı devre dışı bırak) ve raporu "işlendi" olarak işaretle/arşivle.
+3. Kullanıcı sözleşmesinde kabul edilemez içerik politikasını ve tolerans göstermeme ilkesini yayımla; uygulama içi destek/iletişim adresini (`support@your-domain.example` yerine gerçek adresiniz) görünür tut.
+4. App Store Connect inceleme notlarına moderasyon sürecini ve iletişim bilgisini yaz.
+5. Kelime listesini zamanla güncelle; yanlış pozitif şikayetlerini destek kanalından ele al.
+
 ## Canlıya geçmeden tamamlanacak işler
 
 1. Gerçek `.env.local`/EAS ortam değerleri, Worker public Firebase key ve secretları; R2 bucket binding; Apple/Google provider ve redirect/client kimlikleri. Dedicated servis hesabı aynı projede ve en az yetkiyle çalışmalı.
 2. Firestore kuralları ve indekslerini Worker + mobil sürümle uyumlu sırada staging ve production'a yayımla. Yeni kurallar eski istemcilerin kotasız yazmalarını reddeder. Mevcut kullanıcıları korumak için kontrollü sürüm geçişi yap; eski geniş sorgular kırılabilir. Eski Google avatarlarını gerekirse yeni R2 avatarıyla değiştir. Var olan paylaşım tercihlerinin kullanıcının isteğiyle uyumunu incele.
 3. Firebase Console: **Spark** planını doğrula; Blaze kullanılıyorsa bu rapordaki sorgu/yazma limitleri toplam faturayı garanti etmez. Email enumeration protection ve 12 karakter parola politikasını konsolda da etkinleştir; istemci kontrolleri doğrudan Auth API çağrılarını sınırlamaz. Auth uçlarının kendi rate limitleri ve App Check/cihaz doğrulama seçenekleri ayrıca değerlendirilmeli. Native App Check bu çalışmada entegre edilmedi.
-4. Cloudflare: **Workers Free + SQLite Durable Objects**, özel R2 bucket, kapalı r2.dev/public domain ve gereksiz erişim anahtarı olmamasını doğrula. WAF/bot kontrollerini sağlayıcı seviyesinde yapılandır. R2 ücretsiz kullanım hesap genelindedir; başka bucket/worker/lifecycle işlemleri bu sayaçların dışındadır. Sayaçlar eski mevcut depolamayı otomatik ölçmez; başlangıç doluluğunu kontrol et. 5 GiB genel kümülatif koruma silmeyle azalmaz; körlemesine sıfırlamayın. Pro kullanıcı başına ayrı depolama tavanı uygulanmıyor.
+4. Cloudflare: **Workers Free + SQLite Durable Objects**, özel R2 bucket, kapalı r2.dev/public domain ve gereksiz erişim anahtarı olmamasını doğrula. WAF/bot kontrollerini sağlayıcı seviyesinde yapılandır. R2 ücretsiz kullanım hesap genelindedir; başka bucket/worker/lifecycle işlemleri bu sayaçların dışındadır. Sayaçlar eski mevcut depolamayı otomatik ölçmez; başlangıç doluluğunu kontrol et. Depolama koruması artık aylık `STORAGE_MONTHLY_BYTES_LIMIT` sayacıdır ve silmede iade edilir. Pro kullanıcı başına ayrı depolama tavanı uygulanmıyor.
 5. OpenAI: yalnızca bu uygulamaya ait proje/anahtar, gerekli model/endpoint izinleri, **5 USD proje hard spend limit** ve bütçe uyarıları. Uyarı tek başına kesici değildir; hard limit de gecikmeli uygulanabilir. Tüm hesabın diğer projelerini bu Worker sınırlamaz. Model/fiyat değişiminde 5 cent ihtiyat politikasını yeniden doğrula. Bütçe artırımı Worker ve OpenAI konsolundan yapılır; App Store sürümü gerektirmez.
-6. Gizlilik/koşul metinlerini gerçek işletmeci bilgisiyle tamamlayıp HTTPS'te yayımla ve App Store Connect'e ekle. Destek: **cigdemgokdas01@gmail.com**. App Privacy beyanlarını Firebase/Auth, fotoğraf, kullanıcı içeriği ve isteğe bağlı OpenAI veri akışıyla eşleştir. Uygulama içindeki metin hukuki uygunluk onayı değildir.
+6. Gizlilik/koşul metinlerini gerçek işletmeci bilgisiyle tamamlayıp HTTPS'te yayımla ve App Store Connect'e ekle. Destek: **support@negiysem.app**. App Privacy beyanlarını Firebase/Auth, fotoğraf, kullanıcı içeriği ve isteğe bağlı OpenAI veri akışıyla eşleştir. Uygulama içindeki metin hukuki uygunluk onayı değildir.
 7. Kullanıcı üretimi içerik için yayın öncesi filtreleme/inceleme ve zamanında rapor müdahalesi sürecini kur. Bildirme/engelleme ve admin claim altyapısı vardır; otomatik içerik moderasyonu veya insan moderasyon hizmeti bu kodla sağlanmış değildir. Apple 1.2 açısından bu süreç tamamlanmadan sosyal özelliklerle yayın hazır kabul edilmemeli.
 8. Gerçek iPhone/TestFlight: e-posta doğrulama/yeniden açılış, Apple gizli e-posta ve tekrar giriş, Google OAuth, şifre sıfırlama, yeniden kurulum, iki hesap arası geçiş, AI izin reddi/geri alma, 429 sınırları, ağ kesintisi, fotoğraf izin reddi, hesap silme/Apple revoke ve kesintiden devam. İmzalı build, cihaz UI testleri, App Store metadata ve submission bu oturumda yapılmadı.
 

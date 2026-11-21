@@ -15,8 +15,22 @@ REVENUECAT_ALLOW_SANDBOX = "false"
 REVENUECAT_SANDBOX_USER_IDS = ""
 AI_ENABLED = "true"
 AI_MONTHLY_BUDGET_CENTS = "500"
-AI_DAILY_REQUEST_LIMIT = "100"
+# Global AI caps (whole deployment). Reservation is a conservative per-call cost estimate in cents.
+AI_RESERVATION_CENTS = "1"
+AI_DAILY_REQUEST_LIMIT = "500"
 AI_MONTHLY_REQUEST_LIMIT = "1000"
+# Per-user daily AI request limit.
+AI_USER_DAILY_LIMIT = "25"
+# Upload caps: global per day, per user per day, and global net bytes per calendar month (5 GiB).
+UPLOAD_DAILY_GLOBAL_LIMIT = "1000"
+UPLOAD_USER_DAILY_LIMIT = "10"
+STORAGE_MONTHLY_BYTES_LIMIT = "5368709120"
+# OpenAI model used for photo analysis and outfit chat.
+OPENAI_MODEL = "gpt-6-luna"
+# Firebase App Check (Worker side). FIREBASE_PROJECT_NUMBER is the numeric project number (Firebase console >
+# Project settings). With APP_CHECK_ENFORCE = "false" tokens are verified when present and failures are only logged.
+FIREBASE_PROJECT_NUMBER = ""
+APP_CHECK_ENFORCE = "false"
 
 [[r2_buckets]]
 binding = "IMAGES"

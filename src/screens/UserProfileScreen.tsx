@@ -9,6 +9,7 @@ import { ScreenFrame } from '../components/ScreenFrame';
 import { SocialAvatar } from '../components/SocialAvatar';
 import { getPublicPostsForUser, getPublicUser, isFollowing, setFollowing, type PublicUser, type SocialPost } from '../data/social';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { describeError, reportError } from '../services/telemetry';
 import { colors, fonts } from '../theme';
 
 type ProfileRoute = RouteProp<RootStackParamList, 'UserProfile'>;
@@ -54,8 +55,9 @@ export function UserProfileScreen() {
     try {
       await setFollowing(viewerId, params.userId, !following);
       setIsFollowing(!following);
-    } catch {
-      Alert.alert('Takip değiştirilemedi', 'Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('follow_toggle', error);
+      Alert.alert('Takip değiştirilemedi', describeError(error, 'Lütfen tekrar dene.'));
     } finally { setBusy(false); }
   }
 
@@ -72,9 +74,9 @@ export function UserProfileScreen() {
     <View style={styles.sectionHeading}><Text style={styles.sectionLabel}>HERKESE AÇIK PAYLAŞIMLAR</Text><Text style={styles.count}>{posts.length} GÖNDERİ</Text></View>
   </>;
 
-  return <ScreenFrame>
-    <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Keşfet'e dön"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Keşfet'e dön</Text></Pressable>
-    {loading ? <View style={styles.center}><ActivityIndicator color={colors.sage} /></View> : failed ? <View style={styles.center}><Text style={styles.error}>Profil açılamadı.</Text><Pressable onPress={() => setReload((n) => n + 1)}><Text style={styles.retry}>Tekrar dene</Text></Pressable></View> : !profile ? <View style={styles.center}><Text style={styles.error}>Profil bulunamadı.</Text></View> : (
+  return <ScreenFrame includeBottom>
+    <Pressable style={styles.back} onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Keşfet'e dön"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>{"Keşfet'e dön"}</Text></Pressable>
+    {loading ? <View style={styles.center}><ActivityIndicator color={colors.sage} /></View> : failed ? <View style={styles.center}><Text style={styles.error}>Profil açılamadı.</Text><Pressable onPress={() => setReload((n) => n + 1)} accessibilityRole="button" accessibilityLabel="Tekrar dene"><Text style={styles.retry}>Tekrar dene</Text></Pressable></View> : !profile ? <View style={styles.center}><Text style={styles.error}>Profil bulunamadı.</Text></View> : (
       <FlatList
         data={posts}
         keyExtractor={(post) => `${post.kind}-${post.id}`}

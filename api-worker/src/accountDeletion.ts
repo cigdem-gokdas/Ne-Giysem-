@@ -19,8 +19,15 @@ export async function adminToken(env: AdminEnv): Promise<string> {
   return body.access_token;
 }
 
-/** Each call deletes at most 100 documents or 100 images; safe to resume after disconnects. */
-export async function deleteAccountChunk(env: AdminEnv, uid: string, idToken: string): Promise<{ done: boolean }> {
+export type DeletedObject = { size?: number; uploaded?: Date };
+const POST_BATCH = 20;
+
+/**
+ * Each call removes a bounded amount of data and is safe to resume after disconnects. Posts are deleted in
+ * batches of up to 20 per commit (with their likes / comments / notifications) so the whole deletion finishes well
+ * inside the 5-minute recent-login window. `onObjectsDeleted` lets the caller refund storage accounting.
+ */
+export async function deleteAccountChunk(env: AdminEnv, uid: string, idToken: string, onObjectsDeleted?: (objects: DeletedObject[]) => Promise<void>): Promise<{ done: boolean }> {
   const token = await adminToken(env); // Validate infrastructure BEFORE any destructive operation.
   const database = `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents`;
   const root = `https://firestore.googleapis.com/v1/${database}`;
@@ -31,34 +38,52 @@ export async function deleteAccountChunk(env: AdminEnv, uid: string, idToken: st
   }
   // Tombstone denies all client data access even while an old ID token is still valid.
   await api(':commit', { writes: [{ update: { name: `${database}/account_deletions/${uid}`, fields: { started: { timestampValue: new Date().toISOString() } } } }] });
+  // Reports FILED AGAINST this user (reportedId) are deliberately kept so abusers cannot erase them by deleting their account.
+  // Reports filed BY this user are anonymised below instead of deleted.
   const targets = [
     ['wardrobe','userId'], ['posts','userId'], ['mood_boards','userId'], ['chat_sessions','userId'], ['outfit_history','userId'],
     ['likes','userId'], ['comments','userId'], ['notifications','userId'], ['notifications','actorId'],
-    ['reports','reporterId'], ['reports','reportedId'], ['blocked_users','blockerId'], ['blocked_users','blockedId'],
+    ['reports','reporterId'], ['blocked_users','blockerId'], ['blocked_users','blockedId'],
     ['follows','followerId'], ['follows','followedId'],
   ];
-  async function rows(collectionId: string, field: string, value: string) {
-    return (await api(':runQuery', { structuredQuery: { from: [{ collectionId }], select: { fields: [{ fieldPath: '__name__' }] }, where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: value } } }, limit: 100 } })).json<Array<{ document?: { name: string } }>>();
+  async function query(collectionId: string, filter: unknown, select = true) {
+    return (await api(':runQuery', { structuredQuery: { from: [{ collectionId }], ...(select ? { select: { fields: [{ fieldPath: '__name__' }] } } : {}), where: { fieldFilter: filter }, limit: 100 } })).json<Array<{ document?: { name: string; fields?: Record<string, unknown> } }>>();
   }
+  const rows = (collectionId: string, field: string, value: string) => query(collectionId, { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: value } });
+  const rowsIn = (collectionId: string, field: string, values: string[]) => query(collectionId, { field: { fieldPath: field }, op: 'IN', value: { arrayValue: { values: values.map((stringValue) => ({ stringValue })) } } });
   for (const [collectionId, field] of targets) {
-    const names = (await rows(collectionId, field, uid)).flatMap((row) => row.document ? [row.document.name] : []);
-    // Remove social children while their post still exists, including other people's comments.
-    if (collectionId === 'posts') {
-      for (const name of names) {
-        for (const child of ['likes','comments','notifications']) {
-          const children = (await rows(child, 'postId', name.split('/').pop()!)).flatMap((row) => row.document ? [row.document.name] : []);
-          if (children.length) { await api(':commit', { writes: children.map((name) => ({ delete: name })) }); return { done: false }; }
-        }
-        // One post per call keeps subrequests bounded independently of social volume.
-        await api(':commit', { writes: [{ delete: name }] });
+    if (collectionId === 'reports') {
+      const reports = (await query('reports', { field: { fieldPath: 'reporterId' }, op: 'EQUAL', value: { stringValue: uid } }, false)).flatMap((row) => row.document ? [row.document] : []);
+      if (reports.length) {
+        // The document id embeds the reporter uid, so recreate each report under a random id with reporterId "deleted".
+        await api(':commit', { writes: reports.flatMap((report) => [
+          { update: { name: `${database}/reports/deleted_${crypto.randomUUID()}`, fields: { ...report.fields, reporterId: { stringValue: 'deleted' } } }, currentDocument: { exists: false } },
+          { delete: report.name },
+        ]) });
         return { done: false };
       }
+      continue;
+    }
+    const names = (await rows(collectionId, field, uid)).flatMap((row) => row.document ? [row.document.name] : []);
+    // Remove social children while their posts still exist, including other people's comments.
+    if (collectionId === 'posts' && names.length) {
+      const batch = names.slice(0, POST_BATCH);
+      const postIds = batch.map((name) => name.split('/').pop()!);
+      const children: string[] = [];
+      for (const child of ['likes','comments','notifications']) children.push(...(await rowsIn(child, 'postId', postIds)).flatMap((row) => row.document ? [row.document.name] : []));
+      if (children.length) { await api(':commit', { writes: children.map((name) => ({ delete: name })) }); return { done: false }; }
+      await api(':commit', { writes: batch.map((name) => ({ delete: name })) });
+      return { done: false };
     }
     if (names.length) { await api(':commit', { writes: names.map((name) => ({ delete: name })) }); return { done: false }; }
   }
   for (const folder of ['wardrobe','gallery','avatars']) {
     const objects = await env.IMAGES.list({ prefix: `${folder}/${uid}/`, limit: 100 });
-    if (objects.objects.length) { await env.IMAGES.delete(objects.objects.map((item) => item.key)); return { done: false }; }
+    if (objects.objects.length) {
+      await env.IMAGES.delete(objects.objects.map((item) => item.key));
+      await onObjectsDeleted?.(objects.objects.map((item) => ({ size: item.size, uploaded: item.uploaded }))).catch(() => undefined);
+      return { done: false };
+    }
   }
   await api(':commit', { writes: ['users','account_settings','write_limits'].map((collection) => ({ delete: `${database}/${collection}/${uid}` })) });
   const deleted = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:delete?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken }), signal: AbortSignal.timeout(8000) });

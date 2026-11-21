@@ -4,7 +4,7 @@ import { RateLimiter } from './rateLimiter';
 import { revokeApple, type AppleEnv } from './apple';
 import { deleteAccountChunk, adminToken } from './accountDeletion';
 import { CostGuard, type CostEnv } from './costGuard';
-import { HttpError, boundedBody, inputJson, validImage, validStorageKey } from './security';
+import { HttpError, boundedBody, cleanMessage, cleanText, extensionFor, inputJson, stripJpegMetadata, validImage, validStorageKey } from './security';
 import { completeOutfit, type ClothingSummary } from './outfitRules';
 
 export { RateLimiter, CostGuard };
@@ -18,6 +18,12 @@ export interface Env extends CostEnv, AppleEnv, BillingEnv {
   ALLOWED_ORIGINS: string;
   RATE_LIMITER: DurableObjectNamespace;
   IMAGES: R2Bucket;
+  /** OpenAI model name (default gpt-6-luna). */
+  OPENAI_MODEL?: string;
+  /** Firebase project NUMBER (not id); used to verify App Check tokens. */
+  FIREBASE_PROJECT_NUMBER?: string;
+  /** "true" rejects requests without a valid App Check token; otherwise tokens are verified when present and failures only logged. */
+  APP_CHECK_ENFORCE?: string;
 }
 
 type AuthUser = { uid: string; authTime: number; appleSubject?: string };
@@ -31,7 +37,9 @@ type OpenAIResponse = {
 };
 type OpenAIErrorResponse = { error?: { code?: string; message?: string; type?: string } };
 
-const MODEL = 'gpt-6-luna';
+const DEFAULT_MODEL = 'gpt-6-luna';
+const APP_CHECK_JWKS = createRemoteJWKSet(new URL('https://firebaseappcheck.googleapis.com/v1/jwks'));
+const MEDIA_IP_LIMIT = 600, MEDIA_IP_WINDOW_MS = 10 * 60_000;
 const FIREBASE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'));
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 const ALLOWED_FOLDERS = new Set(['wardrobe', 'gallery', 'avatars']);
@@ -52,7 +60,7 @@ function corsHeaders(request: Request, env: Env): HeadersInit {
   const allowed = (env.ALLOWED_ORIGINS ?? '').split(',').map((value) => value.trim()).filter(Boolean);
   return {
     ...(origin && allowed.includes(origin) ? { 'Access-Control-Allow-Origin': origin } : {}),
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Firebase-AppCheck',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
@@ -64,6 +72,25 @@ function corsHeaders(request: Request, env: Env): HeadersInit {
 
 function response(request: Request, env: Env, body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: corsHeaders(request, env) });
+}
+
+/** Firebase App Check. Soft mode (default): verify when present, log failures, allow. Enforce mode: reject missing/invalid tokens. */
+async function verifyAppCheck(request: Request, env: Env): Promise<void> {
+  const enforce = env.APP_CHECK_ENFORCE === 'true';
+  const token = request.headers.get('X-Firebase-AppCheck');
+  if (!token) { if (enforce) throw new HttpError(401, 'Uygulama doğrulaması gerekli.', 'app_check'); return; }
+  const number = env.FIREBASE_PROJECT_NUMBER;
+  if (!number || !/^\d{1,20}$/.test(number)) {
+    console.error('App Check token received but FIREBASE_PROJECT_NUMBER is not configured');
+    if (enforce) throw new HttpError(503, 'Uygulama doğrulaması şu anda yapılamıyor.', 'app_check');
+    return;
+  }
+  try {
+    await jwtVerify(token.slice(0, 8192), APP_CHECK_JWKS, { algorithms: ['RS256'], issuer: `https://firebaseappcheck.googleapis.com/${number}`, audience: `projects/${number}` });
+  } catch {
+    console.error('App Check verification failed', { enforce });
+    if (enforce) throw new HttpError(401, 'Uygulama doğrulaması başarısız.', 'app_check');
+  }
 }
 
 async function authenticate(request: Request, env: Env): Promise<AuthUser> {
@@ -110,10 +137,28 @@ async function consumeBudget(env: Env, kind: 'ai' | 'upload' | 'media', bytes?: 
   }
 }
 
-function extensionFor(fileName: string, mimeType: string): string {
-  const fromName = fileName.match(/\.([a-zA-Z0-9]{2,5})$/)?.[1]?.toLowerCase();
-  if (fromName && /^(jpe?g|png|webp|heic|heif)$/.test(fromName)) return fromName === 'jpeg' ? 'jpg' : fromName;
-  return mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'jpg';
+/** Best-effort storage-accounting refund for deleted objects (only bytes uploaded this month were counted). */
+async function refundBytes(env: Env, objects: Array<{ size?: number; uploaded?: Date }>): Promise<void> {
+  const month = new Date().toISOString().slice(0, 7);
+  const bytes = objects.reduce((sum, item) => sum + (item.uploaded && new Date(item.uploaded).toISOString().slice(0, 7) === month && Number.isSafeInteger(item.size) ? item.size! : 0), 0);
+  if (bytes <= 0 || !env.COST_GUARD) return;
+  await env.COST_GUARD.get(env.COST_GUARD.idFromName('global-budget-v1')).fetch('https://budget/consume', { method: 'POST', body: JSON.stringify({ kind: 'refund', bytes, month }) }).catch(() => undefined);
+}
+
+/** Fixed-window throttle stored in a RateLimiter Durable Object (per user, or per hashed IP). */
+async function throttle(env: Env, objectName: string, name: string, max: number, windowMs: number, message: string): Promise<void> {
+  const result = await env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(objectName)).fetch('https://rate-limit/limit', { method: 'POST', body: JSON.stringify({ name, max, windowMs }) });
+  if (result.status === 429) {
+    const body = await result.json<{ waitSeconds?: number }>().catch((): { waitSeconds?: number } => ({}));
+    throw new HttpError(429, message, 'cooldown', body.waitSeconds);
+  }
+  if (!result.ok) throw new HttpError(503, 'İstek şu anda işlenemiyor. Biraz sonra yeniden dene.');
+}
+
+async function clientKey(request: Request): Promise<string> {
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip)));
+  return 'ip:' + Array.from(digest.slice(0, 12), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function mediaUrl(request: Request, key: string, accessToken: string): string {
@@ -148,10 +193,9 @@ async function openAI(env: Env, body: unknown): Promise<OpenAIResponse> {
   if (!result.ok) {
     const failure = await result.json<OpenAIErrorResponse>().catch((): OpenAIErrorResponse => ({}));
     const code = failure.error?.code ?? failure.error?.type;
-    console.error('OpenAI request failed', { status: result.status, code });
+    console.error('OpenAI request failed', { status: result.status, code }); // internal detail is logged only, never returned
     if (result.status === 401) throw new HttpError(502, 'Stil servisi şu anda kullanılamıyor.');
     if (result.status === 429) throw new HttpError(502, 'Stil servisi kullanım sınırına ulaştı. Lütfen daha sonra dene.');
-    if (code === 'model_not_found') throw new HttpError(502, 'Yapay zeka modeli bu hesapta kullanılamıyor.');
     throw new HttpError(502, 'Stil servisi şu anda yanıt veremiyor.');
   }
   return result.json<OpenAIResponse>();
@@ -209,6 +253,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     catch { throw new HttpError(404, 'Fotoğraf bulunamadı.'); }
     const token = url.searchParams.get('token');
     if (!validStorageKey(key) || !token || !/^[0-9a-f-]{36}$/.test(token)) throw new HttpError(404, 'Fotoğraf bulunamadı.');
+    // Per-IP throttle first (cheap), then look the object up and compare the token BEFORE touching the global
+    // media budget: junk / guessed URLs must never be able to exhaust the budget for everybody.
+    await throttle(env, await clientKey(request), 'media', MEDIA_IP_LIMIT, MEDIA_IP_WINDOW_MS, 'Çok fazla fotoğraf isteği gönderdin. Biraz sonra yeniden dene.');
+    const head = await env.IMAGES.head(key);
+    if (!head || head.customMetadata?.accessToken !== token) throw new HttpError(404, 'Fotoğraf bulunamadı.');
     await consumeBudget(env, 'media');
     const object = await env.IMAGES.get(key);
     if (!object || object.customMetadata?.accessToken !== token) throw new HttpError(404, 'Fotoğraf bulunamadı.');
@@ -230,6 +279,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204, headers: corsHeaders(request, env) });
   }
   if (request.method !== 'POST') throw new HttpError(405, 'Yalnızca POST desteklenir.');
+  await verifyAppCheck(request, env);
   const paths = ['/upload-image', '/delete-object', '/delete-account', '/analyze-clothing', '/generate-outfit', '/subscription-status', '/wardrobe-capacity', '/wardrobe-create'];
   if (!paths.includes(url.pathname)) throw new HttpError(404, 'İşlem bulunamadı.');
   if (['/analyze-clothing', '/generate-outfit'].includes(url.pathname) && (env.AI_ENABLED !== 'true' || !env.OPENAI_API_KEY)) throw new HttpError(503, 'Yapay zeka özelliği şu anda kapalı. Kıyafetlerini elle etiketleyebilirsin.', 'ai_disabled');
@@ -269,19 +319,25 @@ async function route(request: Request, env: Env): Promise<Response> {
     const bytes = await fileValue.arrayBuffer();
     if (bytes.byteLength !== fileValue.size) throw new HttpError(400, 'Fotoğraf aktarımı eksik tamamlandı. Lütfen tekrar dene.');
     if (!validImage(new Uint8Array(bytes), contentType)) throw new HttpError(415, 'Dosyanın içeriği fotoğraf biçimiyle eşleşmiyor.');
-    const quota = await env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(uid)).fetch('https://rate-limit/upload', { method: 'POST', body: JSON.stringify({ bytes: bytes.byteLength }) });
+    const extension = extensionFor(fileValue.name, contentType); // from the validated MIME; a conflicting file name is rejected
+    // JPEG: strip EXIF / XMP (GPS, device, timestamps) server-side before anything is stored.
+    const stored: Uint8Array | ArrayBuffer = contentType === 'image/jpeg' ? stripJpegMetadata(new Uint8Array(bytes)) : bytes;
+    const quota = await env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(uid)).fetch('https://rate-limit/upload', { method: 'POST', body: JSON.stringify({ bytes: stored.byteLength }) });
     if (!quota.ok) throw new HttpError(429, 'Günlük fotoğraf yükleme sınırına ulaştın veya çok hızlı yüklüyorsun.', 'storage');
-    await consumeBudget(env, 'upload', bytes.byteLength);
-    const key = `${folderValue}/${uid}/${crypto.randomUUID()}.${extensionFor(fileValue.name, contentType)}`;
+    await consumeBudget(env, 'upload', stored.byteLength);
+    const key = `${folderValue}/${uid}/${crypto.randomUUID()}.${extension}`;
     const accessToken = crypto.randomUUID();
-    await env.IMAGES.put(key, bytes, { httpMetadata: { contentType }, customMetadata: { accessToken } });
+    await env.IMAGES.put(key, stored, { httpMetadata: { contentType }, customMetadata: { accessToken } });
     return response(request, env, { publicUrl: mediaUrl(request, key, accessToken), key });
   }
 
   if (url.pathname === '/delete-object') {
     const input = await inputJson<{ key?: string }>(request);
     if (!validStorageKey(input.key, uid)) throw new HttpError(403, 'Bu dosyayı silme yetkin yok.');
+    await throttle(env, uid, 'delete-object', 60, 10 * 60_000, 'Çok fazla silme isteği gönderdin. Biraz sonra yeniden dene.');
+    const head = await env.IMAGES.head(input.key).catch(() => null);
     await env.IMAGES.delete(input.key);
+    if (head) await refundBytes(env, [{ size: head.size, uploaded: head.uploaded }]);
     return response(request, env, { ok: true });
   }
 
@@ -301,7 +357,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       }
     }
     await limiter.fetch('https://rate-limit/deleting', { method: 'POST', body: '{}' });
-    const result = await deleteAccountChunk(env, uid, request.headers.get('Authorization')!.slice(7));
+    const result = await deleteAccountChunk(env, uid, request.headers.get('Authorization')!.slice(7), (objects) => refundBytes(env, objects));
     if (result.done) {
       if (env.REVENUECAT_SECRET_KEY) {
         const removed = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(uid)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${env.REVENUECAT_SECRET_KEY}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
@@ -320,7 +376,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!validImage(Uint8Array.from(atob(input.imageBase64.slice(0, 32)), (c) => c.charCodeAt(0)), input.mimeType)) throw new HttpError(400, 'Fotoğraf verisi geçersiz.');
     const tags = await withAiQuota(env, uid, 'analysis', async () => {
       const result = await openAI(env, {
-        model: MODEL,
+        model: env.OPENAI_MODEL?.trim() || DEFAULT_MODEL,
         service_tier: 'default',
         reasoning: { effort: 'none' },
         max_output_tokens: 300,
@@ -336,18 +392,22 @@ async function route(request: Request, env: Env): Promise<Response> {
     return response(request, env, { tags });
   }
 
-  if (url.pathname === '/generate-outfit') {
+  // The path whitelist above guarantees /generate-outfit is the only remaining route.
+  {
     const input = await inputJson<{ wardrobe?: ClothingSummary[]; message?: string; aiConsent?: boolean }>(request);
     if (input.aiConsent !== true) throw new HttpError(403, 'OpenAI ile veri paylaşımı için onayın gerekiyor.', 'consent_required');
-    const message = typeof input.message === 'string' ? input.message.trim() : '';
+    const message = typeof input.message === 'string' ? cleanMessage(input.message) : '';
     if (!Array.isArray(input.wardrobe) || input.wardrobe.length < 2 || input.wardrobe.length > 100 || !message || message.length > 1200) throw new HttpError(400, 'Kombin isteği geçersiz.');
     if (!input.wardrobe.every((item) => item && typeof item === 'object')) throw new HttpError(400, 'Gardırop özeti geçersiz.');
-    const wardrobe = input.wardrobe.map((item) => ({ id: item.id, tur: item.tur, renk: item.renk, desen: item.desen, son_kullanim: item.son_kullanim, kullanim_sayisi: item.kullanim_sayisi, kesim: item.kesim ?? 'bilinmiyor', alt_tur: item.alt_tur ?? 'diğer', kemer_uygun: item.kemer_uygun ?? false, mevsim: item.mevsim ?? [], stil: item.stil ?? [], resmiyet: item.resmiyet ?? 'bilinmiyor', malzeme_tahmini: item.malzeme_tahmini ?? 'bilinmiyor' }));
-    const valid = wardrobe.every((item) => item && typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 128 && ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'].includes(item.tur) && typeof item.renk === 'string' && item.renk.length <= 80 && typeof item.desen === 'string' && item.desen.length <= 80 && ['dar', 'normal', 'bol', 'bilinmiyor'].includes(item.kesim) && typeof item.alt_tur === 'string' && item.alt_tur.length <= 32 && typeof item.kemer_uygun === 'boolean' && Array.isArray(item.mevsim) && item.mevsim.length <= 4 && item.mevsim.every(value => typeof value === 'string' && value.length <= 40) && Array.isArray(item.stil) && item.stil.length <= 8 && item.stil.every(value => typeof value === 'string' && value.length <= 40) && ['günlük','smart casual','resmi','bilinmiyor'].includes(item.resmiyet) && typeof item.malzeme_tahmini === 'string' && item.malzeme_tahmini.length <= 80 && (item.son_kullanim === 'hic' || (Number.isSafeInteger(item.son_kullanim) && item.son_kullanim >= 0)) && Number.isSafeInteger(item.kullanim_sayisi) && item.kullanim_sayisi >= 0);
+    const text = (value: unknown) => typeof value === 'string' ? cleanText(value) : value;
+    const texts = (value: unknown) => Array.isArray(value) ? value.map(text) : value;
+    // Every string that reaches the prompt is stripped of control / zero-width / bidi characters.
+    const wardrobe = input.wardrobe.map((item) => ({ id: item.id, tur: item.tur, renk: text(item.renk) as string, desen: text(item.desen) as string, son_kullanim: item.son_kullanim, kullanim_sayisi: item.kullanim_sayisi, kesim: item.kesim ?? 'bilinmiyor', alt_tur: (text(item.alt_tur) ?? 'diğer') as string, kemer_uygun: item.kemer_uygun ?? false, mevsim: (texts(item.mevsim) ?? []) as string[], stil: (texts(item.stil) ?? []) as string[], resmiyet: item.resmiyet ?? 'bilinmiyor', malzeme_tahmini: (text(item.malzeme_tahmini) ?? 'bilinmiyor') as string }));
+    const valid = wardrobe.every((item) => item && typeof item.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(item.id) && ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'].includes(item.tur) && typeof item.renk === 'string' && item.renk.length <= 80 && typeof item.desen === 'string' && item.desen.length <= 80 && ['dar', 'normal', 'bol', 'bilinmiyor'].includes(item.kesim) && typeof item.alt_tur === 'string' && item.alt_tur.length <= 32 && typeof item.kemer_uygun === 'boolean' && Array.isArray(item.mevsim) && item.mevsim.length <= 4 && item.mevsim.every(value => typeof value === 'string' && value.length <= 40) && Array.isArray(item.stil) && item.stil.length <= 8 && item.stil.every(value => typeof value === 'string' && value.length <= 40) && ['günlük','smart casual','resmi','bilinmiyor'].includes(item.resmiyet) && typeof item.malzeme_tahmini === 'string' && item.malzeme_tahmini.length <= 80 && (item.son_kullanim === 'hic' || (Number.isSafeInteger(item.son_kullanim) && item.son_kullanim >= 0)) && Number.isSafeInteger(item.kullanim_sayisi) && item.kullanim_sayisi >= 0);
     if (!valid || new Set(wardrobe.map((item) => item.id)).size !== wardrobe.length) throw new HttpError(400, 'Gardırop özeti geçersiz.');
     const recommendation = await withAiQuota(env, uid, 'chat', async () => {
       const result = await openAI(env, {
-        model: MODEL,
+        model: env.OPENAI_MODEL?.trim() || DEFAULT_MODEL,
         service_tier: 'default',
         reasoning: { effort: 'none' },
         max_output_tokens: 500,
@@ -359,8 +419,6 @@ async function route(request: Request, env: Env): Promise<Response> {
     });
     return response(request, env, { recommendation });
   }
-
-  throw new HttpError(404, 'Endpoint bulunamadı.');
 }
 
 export default {

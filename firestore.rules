@@ -9,6 +9,20 @@ service cloud.firestore {
     function short(value, n) { return value is string && value.size() <= n; }
     function text(value, n) { return short(value, n) && value.size() > 0; }
     function date(value) { return value is string && value.size() == 24; }
+    // createdAt anti-spoofing (CREATE rules only; updates keep the stored value). The client contract is
+    // unchanged (ISO string from toISOString()), but the calendar day must be today (UTC) or yesterday
+    // (clock skew around midnight) according to the server's request.time.
+    function dayStr(t) {
+      return ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25','26','27','28','29','30','31'][t.day() - 1];
+    }
+    function monthStr(t) { return ['01','02','03','04','05','06','07','08','09','10','11','12'][t.month() - 1]; }
+    // Lookup table instead of string conversion; extend it (and the offset) before 2046.
+    function yearStr(t) { return ['2026','2027','2028','2029','2030','2031','2032','2033','2034','2035','2036','2037','2038','2039','2040','2041','2042','2043','2044','2045'][t.year() - 2026]; }
+    function dayPrefix(t) { return yearStr(t) + '-' + monthStr(t) + '-' + dayStr(t) + 'T'; }
+    function freshDate(value) {
+      return date(value) && value.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z') &&
+        (value.matches(dayPrefix(request.time) + '.*') || value.matches(dayPrefix(request.time - duration.value(1, 'd')) + '.*'));
+    }
     function isAdmin() { return signedIn() && request.auth.token.get('admin', false) == true; }
     function userExists(uid) { return exists(/databases/$(database)/documents/users/$(uid)); }
     function post(id) { return get(/databases/$(database)/documents/posts/$(id)); }
@@ -18,7 +32,17 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/blocked_users/$(request.auth.uid + '_' + other)) ||
         exists(/databases/$(database)/documents/blocked_users/$(other + '_' + request.auth.uid));
     }
-    function media(url) { return url == null || (short(url, 700) && url.matches('https://[^/]+/media/.*')); }
+    // MEDIA HOST PIN. Only images served by our Worker are accepted in any document. This regex MUST be edited
+    // if the Worker host changes (custom domain, different worker name): e.g. 'https://img[.]example[.]com/media/.*'.
+    function mediaHost(url) { return url.matches('https://ne-giysem-api\\.[a-z0-9-]+\\.workers\\.dev/media/.*'); }
+    function media(url) { return url == null || (url is string && short(url, 700) && mediaHost(url)); }
+    // Board posts embed up to 12 snapshot items; each imageUri must also point at our media host.
+    function itemMedia(items, i) { return items.size() <= i || (items[i] is map && items[i].get('imageUri', '') is string && short(items[i].get('imageUri', ''), 700) && mediaHost(items[i].get('imageUri', ''))); }
+    function itemsMedia(items) {
+      return itemMedia(items,0) && itemMedia(items,1) && itemMedia(items,2) && itemMedia(items,3) && itemMedia(items,4) && itemMedia(items,5) &&
+        itemMedia(items,6) && itemMedia(items,7) && itemMedia(items,8) && itemMedia(items,9) && itemMedia(items,10) && itemMedia(items,11);
+    }
+    function notDeleting(uid) { return authenticated() && !exists(/databases/$(database)/documents/account_deletions/$(uid)); }
     function key(value, folder) { return value is string && value.matches(folder + '/' + request.auth.uid + '/[a-f0-9-]{36}[.](jpg|png|webp|heic|heif)'); }
     function ownStable() { return owner(resource.data) && request.resource.data.userId == resource.data.userId && request.resource.data.createdAt == resource.data.createdAt; }
     function charged(path) {
@@ -39,13 +63,21 @@ service cloud.firestore {
          (exists(/databases/$(database)/documents/write_limits/$(uid)) && request.resource.data.count ==
           (resource.data.day == request.time.date() ? resource.data.count : 0) + request.resource.data.paths.size()));
     }
+    // usernameLower must be the lower-case form of username. The client lower-cases with tr-TR (I -> dotless i,
+    // dotted capital I -> i), so that form is accepted next to the invariant (root-locale) form.
+    function lowerOk(d) {
+      return d.usernameLower == d.username.lower() ||
+        d.usernameLower == d.username.replace('I', 'ı').replace('İ', 'i').lower();
+    }
     function profile(d) {
       return d.keys().hasOnly(['username','usernameLower','avatarUri','avatarKey','bio','role','authProvider','termsAcceptedAt','shareGallery','shareBoards','createdAt']) &&
-        text(d.username,32) && text(d.usernameLower,64) && short(d.bio,160) && media(d.avatarUri) &&
+        text(d.username,32) && text(d.usernameLower,64) && lowerOk(d) && short(d.bio,160) && media(d.avatarUri) &&
         (d.avatarKey == null || key(d.avatarKey,'avatars')) && d.shareGallery is bool && d.shareBoards is bool;
     }
     match /users/{uid} {
       allow get: if self(uid) || signedIn();
+      // Profiles are discoverable by design (Discover / follow). The query must be bounded; the client currently
+      // asks for 50. Fields are all non-sensitive public profile data (no e-mail is ever stored here).
       allow list: if signedIn() && bounded(50);
       allow create: if self(uid) && !exists(/databases/$(database)/documents/account_deletions/$(uid)) && profile(request.resource.data) && request.resource.data.role == 'user' &&
         request.resource.data.authProvider in ['local','google','apple'] && request.resource.data.createdAt == request.time &&
@@ -55,11 +87,14 @@ service cloud.firestore {
         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shareBoards']) && request.resource.data.shareBoards == false) ||
         (charged('users/' + uid) && profile(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username','usernameLower','avatarUri','avatarKey','bio','shareGallery','shareBoards'])));
 
-      allow delete: if self(uid);
+      allow delete: if self(uid) && signedIn() && charged('users/' + uid);
     }
     match /account_settings/{uid} {
-      allow get, delete: if self(uid);
-      allow create, update: if self(uid) && request.resource.data.keys().hasOnly(['aiConsent','termsVersion','termsAcceptedAt']) &&
+      allow get: if self(uid);
+      // Registration writes this document before the e-mail is verified and without a write budget, so signedIn()
+      // and charged() cannot be required here; the tombstone check stops re-creation during/after deletion.
+      allow delete: if self(uid) && notDeleting(uid);
+      allow create, update: if self(uid) && notDeleting(uid) && request.resource.data.keys().hasOnly(['aiConsent','termsVersion','termsAcceptedAt']) &&
         request.resource.data.aiConsent is bool && request.resource.data.termsVersion == '2026-10-03' && request.resource.data.termsAcceptedAt is timestamp;
     }
     function clothing(d) {
@@ -84,7 +119,7 @@ service cloud.firestore {
     match /chat_sessions/{id} {
       allow get, delete: if owner(resource.data);
       allow list: if owner(resource.data) && bounded(20);
-      allow create: if charged('chat_sessions/' + id) && owner(request.resource.data) && chat(request.resource.data);
+      allow create: if charged('chat_sessions/' + id) && owner(request.resource.data) && chat(request.resource.data) && freshDate(request.resource.data.createdAt);
       allow update: if charged('chat_sessions/' + id) && ownStable() && chat(request.resource.data);
     }
     function history(d) {
@@ -94,8 +129,7 @@ service cloud.firestore {
     match /outfit_history/{id} {
       allow get, delete: if owner(resource.data);
       allow list: if owner(resource.data) && bounded(100);
-      allow create: if charged('outfit_history/' + id) && owner(request.resource.data) && history(request.resource.data);
-      allow update: if charged('outfit_history/' + id) && false;
+      allow create: if charged('outfit_history/' + id) && owner(request.resource.data) && history(request.resource.data) && freshDate(request.resource.data.createdAt);
     }
     function board(d) {
       return d.keys().hasOnly(['userId','title','itemIds','createdAt','isPublic']) && text(d.title,80) && date(d.createdAt) &&
@@ -104,7 +138,7 @@ service cloud.firestore {
     match /mood_boards/{id} {
       allow get: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
       allow list: if signedIn() && bounded(50) && (resource.data.isPublic == true || owner(resource.data));
-      allow create: if charged('mood_boards/' + id) && owner(request.resource.data) && board(request.resource.data);
+      allow create: if charged('mood_boards/' + id) && owner(request.resource.data) && board(request.resource.data) && freshDate(request.resource.data.createdAt);
       allow update: if ownStable() && ((request.resource.data.isPublic == false && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])) ||
         (charged('mood_boards/' + id) && board(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])));
       allow delete: if owner(resource.data);
@@ -112,18 +146,18 @@ service cloud.firestore {
     function validPost(d) {
       return d.keys().hasOnly(['userId','kind','title','imageUri','storageKey','itemIds','items','createdAt','isPublic']) && short(d.title,160) && date(d.createdAt) && d.isPublic is bool &&
         ((d.kind == 'gallery' && media(d.imageUri) && key(d.storageKey,'gallery')) ||
-         (d.kind == 'board' && d.imageUri == null && d.itemIds is list && d.itemIds.size() <= 12 && d.items is list && d.items.size() <= 12));
+         (d.kind == 'board' && d.imageUri == null && d.itemIds is list && d.itemIds.size() <= 12 && d.items is list && d.items.size() <= 12 && itemsMedia(d.items)));
     }
     match /posts/{id} {
       allow get: if signedIn() && (resource.data.isPublic == true || owner(resource.data));
       allow list: if signedIn() && bounded(50) && (resource.data.isPublic == true || owner(resource.data));
-      allow create: if charged('posts/' + id) && owner(request.resource.data) && validPost(request.resource.data);
+      allow create: if charged('posts/' + id) && owner(request.resource.data) && validPost(request.resource.data) && freshDate(request.resource.data.createdAt);
       allow update: if ownStable() && ((request.resource.data.isPublic == false && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic'])) ||
         (charged('posts/' + id) && validPost(request.resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPublic','title'])));
       allow delete: if owner(resource.data) || isAdmin();
     }
     function interaction(d) {
-      return owner(d) && d.postType == post(d.postId).data.kind && date(d.createdAt) &&
+      return owner(d) && d.postType == post(d.postId).data.kind && freshDate(d.createdAt) &&
         post(d.postId).data.isPublic == true && !blockedEitherWay(post(d.postId).data.userId);
     }
     match /likes/{id} {
@@ -146,7 +180,7 @@ service cloud.firestore {
       allow create: if charged('notifications/' + id) && signedIn() && request.resource.data.keys().hasOnly(['actorId','userId','postId','type','message','isRead','createdAt','sourceId']) &&
         request.resource.data.actorId == request.auth.uid && request.resource.data.userId != request.auth.uid &&
         request.resource.data.userId == post(request.resource.data.postId).data.userId && post(request.resource.data.postId).data.isPublic == true &&
-        request.resource.data.type in ['like','comment'] && text(request.resource.data.message,180) && date(request.resource.data.createdAt) &&
+        request.resource.data.type in ['like','comment'] && text(request.resource.data.message,180) && freshDate(request.resource.data.createdAt) &&
         request.resource.data.isRead == false && !blockedEitherWay(request.resource.data.userId) &&
         id == request.resource.data.type + '_' + request.resource.data.sourceId &&
         ((request.resource.data.type == 'like' && getAfter(/databases/$(database)/documents/likes/$(request.resource.data.sourceId)).data.userId == request.auth.uid &&
@@ -158,22 +192,43 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list: if signedIn() && bounded(50);
       allow create: if charged('follows/' + id) && signedIn() && request.resource.data.keys().hasOnly(['followerId','followedId','createdAt']) &&
-        request.resource.data.followerId == request.auth.uid && request.resource.data.followedId != request.auth.uid && date(request.resource.data.createdAt) &&
+        request.resource.data.followerId == request.auth.uid && request.resource.data.followedId != request.auth.uid && freshDate(request.resource.data.createdAt) &&
         id == request.auth.uid + '_' + request.resource.data.followedId && userExists(request.resource.data.followedId) && !blockedEitherWay(request.resource.data.followedId);
       allow delete: if signedIn() && (id.matches(request.auth.uid + '_.*') || id.matches('.*_' + request.auth.uid));
     }
     match /blocked_users/{id} {
-      allow get: if signedIn() && (id.matches(request.auth.uid + '_.*') || id.matches('.*_' + request.auth.uid));
-      allow list: if signedIn() && bounded(50) && (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+      // Only the blocker may read a block. The blocked party must never learn who blocked them; enforcement of
+      // blocks on likes/comments/follows is done by the rules themselves (blockedEitherWay uses exists()).
+      allow get: if signedIn() && id.matches(request.auth.uid + '_.*');
+      allow list: if signedIn() && bounded(50) && resource.data.blockerId == request.auth.uid;
       allow create: if charged('blocked_users/' + id) && signedIn() && request.resource.data.keys().hasOnly(['blockerId','blockedId','createdAt']) && request.resource.data.blockerId == request.auth.uid &&
-        request.resource.data.blockedId != request.auth.uid && date(request.resource.data.createdAt) && id == request.auth.uid + '_' + request.resource.data.blockedId && userExists(request.resource.data.blockedId);
+        request.resource.data.blockedId != request.auth.uid && freshDate(request.resource.data.createdAt) && id == request.auth.uid + '_' + request.resource.data.blockedId && userExists(request.resource.data.blockedId);
       allow delete: if signedIn() && resource.data.blockerId == request.auth.uid;
     }
+    // Reports (UGC moderation). New schema: id = reporterId_targetType_targetId with targetType user|post|comment.
+    // The legacy user-report shape (id = reporterId_reportedId, no targetType) stays valid.
     match /reports/{id} {
-      allow create: if charged('reports/' + id) && signedIn() && request.resource.data.keys().hasOnly(['reporterId','reportedId','reason','createdAt']) && request.resource.data.reporterId == request.auth.uid &&
-        request.resource.data.reportedId != request.auth.uid && userExists(request.resource.data.reportedId) && text(request.resource.data.reason,240) && date(request.resource.data.createdAt) &&
-        id == request.auth.uid + '_' + request.resource.data.reportedId;
-      allow get, delete: if isAdmin() || (signedIn() && resource.data.reporterId == request.auth.uid);
+      function reportBase(d) {
+        return d.reporterId == request.auth.uid && d.reportedId is string && d.reportedId != request.auth.uid &&
+          userExists(d.reportedId) && freshDate(d.createdAt);
+      }
+      function legacyReport(d) {
+        return d.keys().hasOnly(['reporterId','reportedId','reason','createdAt']) && text(d.reason,240) &&
+          id == d.reporterId + '_' + d.reportedId;
+      }
+      function targetReport(d) {
+        return d.keys().hasOnly(['reporterId','reportedId','targetType','targetId','reason','createdAt']) &&
+          d.targetType in ['user','post','comment'] && text(d.targetId,128) && text(d.reason,300) &&
+          id == d.reporterId + '_' + d.targetType + '_' + d.targetId &&
+          ((d.targetType == 'user' && d.targetId == d.reportedId) ||
+           (d.targetType == 'post' && get(/databases/$(database)/documents/posts/$(d.targetId)).data.userId == d.reportedId) ||
+           (d.targetType == 'comment' && get(/databases/$(database)/documents/comments/$(d.targetId)).data.userId == d.reportedId));
+      }
+      allow create: if charged('reports/' + id) && signedIn() && reportBase(request.resource.data) &&
+        (legacyReport(request.resource.data) || targetReport(request.resource.data));
+      // Reporters cannot update or delete (no evidence tampering); only moderators remove reports.
+      allow get: if isAdmin() || (signedIn() && resource.data.reporterId == request.auth.uid);
+      allow delete: if isAdmin();
       allow list: if bounded(50) && (isAdmin() || (signedIn() && resource.data.reporterId == request.auth.uid));
     }
     match /{document=**} { allow read, write: if false; }

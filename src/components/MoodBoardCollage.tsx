@@ -26,10 +26,10 @@ function Polaroid({ item, slot, style }: { item: ClothingItem; slot: number; sty
     <View
       style={[styles.polaroid, style, { transform: [{ rotate: tiltFor(item.id, slot) }] }]}
       accessible
-      accessibilityLabel={`${item.tags.renk} ${item.tags.tur} fotoğrafı`}
+      accessibilityLabel={`${item.tags.tur} fotoğrafı`}
     >
       <Image source={{ uri: item.imageUri }} style={styles.photo} resizeMode="contain" />
-      <Text numberOfLines={1} style={styles.photoCaption}>{item.tags.tur} · {item.tags.renk}</Text>
+      <Text numberOfLines={1} style={styles.photoCaption}>{item.tags.tur}</Text>
     </View>
   );
 }

@@ -1,5 +1,7 @@
 import { EmailAuthProvider, reauthenticateWithCredential, sendPasswordResetEmail, updatePassword } from 'firebase/auth';
 import { firebaseAuth } from '../config/firebase';
+import { sanitizeUsername } from '../utils/sanitize';
+import { assertCleanText } from '../utils/moderation';
 
 export type AuthProvider = 'local' | 'google' | 'apple';
 export type UserRole = 'user' | 'admin';
@@ -9,8 +11,9 @@ export function normalizeUsername(value: string): string { return value.trim().r
 export function normalizeEmail(value: string): string { return value.trim().toLowerCase(); }
 
 export async function ensureRegistrationAvailable(username: string, email: string, password: string): Promise<{ username: string; email: string }> {
-  const cleanedUsername = normalizeUsername(username); const cleanedEmail = normalizeEmail(email);
+  const cleanedUsername = sanitizeUsername(normalizeUsername(username)); const cleanedEmail = normalizeEmail(email);
   if (cleanedUsername.length < 3 || cleanedUsername.length > 32) throw new Error('Kullanıcı adı 3–32 karakter olmalı.');
+  assertCleanText(cleanedUsername, 'Kullanıcı adın');
   if (cleanedEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanedEmail)) throw new Error('Geçerli bir e-posta adresi yazmalısın.');
   if (password.length < 12 || password.length > 128) throw new Error('Şifre 12–128 karakter olmalı.');
   return { username: cleanedUsername, email: cleanedEmail };
@@ -26,7 +29,6 @@ export async function ensurePasswordResettable(identifier: string): Promise<void
   try { await sendPasswordResetEmail(firebaseAuth, await resolveLoginEmail(identifier)); }
   catch (error) { if ((error as { code?: string }).code !== 'auth/user-not-found') throw error; }
 }
-export async function resetPassword(identifier: string): Promise<void> { await ensurePasswordResettable(identifier); }
 export async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
   const current = firebaseAuth.currentUser;
   if (!current?.email || current.uid !== userId) throw new Error('Hesap bulunamadı.');

@@ -3,6 +3,7 @@ import { limit, orderBy, collection, deleteDoc, doc, getDoc, query, where, write
 import { getDocsWithIndexFallback } from './firestoreQuery';
 import { firestore } from '../config/firebase';
 import { sanitizeUserText } from '../utils/sanitize';
+import { assertCleanText } from '../utils/moderation';
 import { deleteOwnedPost } from './postCleanup';
 import type { ClothingItem } from './wardrobe';
 
@@ -20,6 +21,8 @@ export async function getMoodBoards(userId: string): Promise<MoodBoard[]> {
 export async function createMoodBoard(userId: string, title: string, itemIds: string[]): Promise<MoodBoard> {
   const unique = [...new Set(itemIds)];
   if (!unique.length || unique.length > 12) throw new Error('Panoya 1–12 parça seçmelisin.');
+  const cleanTitle = sanitizeUserText(title, 80);
+  assertCleanText(cleanTitle, 'Pano başlığın');
   const user = await getDoc(doc(firestore, 'users', userId));
   if (!user.exists()) throw new Error('Kullanıcı bulunamadı.');
 
@@ -33,7 +36,7 @@ export async function createMoodBoard(userId: string, title: string, itemIds: st
   const ref = doc(collection(firestore, 'mood_boards'));
   const board: MoodBoard = {
     id: ref.id,
-    title: sanitizeUserText(title, 80) || 'Benim ilham panom',
+    title: cleanTitle || 'Benim ilham panom',
     itemIds: unique,
     createdAt: new Date().toISOString(),
     isPublic: user.data().shareBoards === true,

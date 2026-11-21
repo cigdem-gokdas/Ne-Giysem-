@@ -15,6 +15,10 @@ async function main(){let adapter=load();
  await Promise.all([adapter.setItem('firebase:user','first'),adapter.setItem('firebase:user','second')]);assert.equal(await adapter.getItem('firebase:user'),'second');
  await adapter.removeItem('firebase:user');assert.equal(await adapter.getItem('firebase:user'),null);assert.equal(secure.size,0);
  await adapter.setItem('firebase:user','old-install-session');plain.clear();adapter=load();await adapter.setItem('firebase:test','availability-probe');await adapter.removeItem('firebase:test');assert.equal(await adapter.getItem('firebase:user'),null);
- console.log('Secure storage: migration, Unicode size, atomic failures, serialization, logout, reinstall passed.');
+ secure.clear();adapter=load();await adapter.setItem('firebase:user','session-before-corruption');let version='';for(const k of [...secure.keys()]){const m=/_([a-f0-9-]{36})_\d+$/.exec(k);if(m)version=m[1];}
+ for(const k of [...secure.keys()]){if(!/_[a-f0-9-]{36}_\d+$/.test(k))secure.set(k,JSON.stringify({version,chunks:0}));}
+ assert.equal(await adapter.getItem('firebase:user'),null);assert.equal(secure.size,0);
+ await adapter.setItem('firebase:user','fresh');assert.equal(await adapter.getItem('firebase:user'),'fresh');await adapter.removeItem('firebase:user');
+ console.log('Secure storage: migration, Unicode size, atomic failures, serialization, logout, reinstall, corrupt-manifest self-repair passed.');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

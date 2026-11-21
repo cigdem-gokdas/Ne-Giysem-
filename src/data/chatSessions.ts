@@ -1,5 +1,5 @@
 import { forEachPage } from './paging';
-import { limitedSet, limitedUpdate } from './writeBudget';
+import { budgetTransaction, limitedSet } from './writeBudget';
 import { limit, orderBy, collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { getDocsWithIndexFallback } from './firestoreQuery';
 import { firestore } from '../config/firebase';
@@ -55,10 +55,13 @@ export async function appendChatMessage(
     await limitedSet(ref, { userId, title: session.title, createdAt: session.createdAt, messages: session.messages });
   } else {
     const ref = doc(firestore, 'chat_sessions', sessionId);
-    const row = await getDoc(ref);
-    if (!row.exists() || row.data().userId !== userId) throw new Error('Sohbet bulunamadı.');
-    session = { id: ref.id, title: row.data().title, createdAt: row.data().createdAt, messages: [...(row.data().messages ?? []).slice(-49), saved] };
-    await limitedUpdate(ref, { messages: session.messages });
+    // Read inside the transaction so a concurrent write from another device cannot be overwritten.
+    session = await budgetTransaction(async (transaction) => {
+      const row = await transaction.get(ref);
+      if (!row.exists() || row.data().userId !== userId) throw new Error('Sohbet bulunamadı.');
+      const next: ChatSession = { id: ref.id, title: row.data().title, createdAt: row.data().createdAt, messages: [...(row.data().messages ?? []).slice(-49), saved] };
+      return { result: next, writes: [{ ref, data: { messages: next.messages }, update: true }] };
+    });
   }
   return { session };
 }

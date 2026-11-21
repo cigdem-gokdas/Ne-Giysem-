@@ -15,7 +15,7 @@ import { ScreenHeading } from '../components/ScreenHeading';
 import { appendChatMessage, clearChatSessions, deleteChatSession, getChatSessions, type ChatSession } from '../data/chatSessions';
 import { createMoodBoard } from '../data/moodBoards';
 import { buildWardrobeSummary, getOutfitHistory, hasAvailableMainPiece, saveOutfitHistoryEntry, type OutfitHistoryEntry } from '../data/outfitHistory';
-import { getClothingItems, type ClothingItem } from '../data/wardrobe';
+import { getClothingItems, loadMissingClothing, type ClothingItem } from '../data/wardrobe';
 import type { MainTabParamList } from '../navigation/AppNavigator';
 import { getReplacementCandidates, isReplacementRequest, recommendOutfit, type ReplacementRequest } from '../services/recommendOutfit';
 import { RateLimitError, ProRequiredError } from '../services/workerApi';
@@ -86,6 +86,8 @@ export function OutfitChatScreen() {
   const sendingRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const closingRef = useRef(false);
+  const knownItemsRef = useRef<ClothingItem[]>([]);
   const chatMutationRef = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
 
@@ -103,10 +105,14 @@ export function OutfitChatScreen() {
   }, [drawerVisible, drawerX]);
 
   function closeDrawer(afterClose?: () => void) {
+    if (closingRef.current) return;
+    closingRef.current = true;
     Animated.timing(drawerX, { toValue: -drawerWidth, duration: 220, useNativeDriver: true }).start(({ finished }) => {
-      if (!finished || !mountedRef.current) return;
+      closingRef.current = false;
+      if (!mountedRef.current) return;
+      // Hide the Modal even when the animation was interrupted, otherwise an invisible Modal keeps blocking touches.
       setDrawerVisible(false);
-      afterClose?.();
+      if (finished) afterClose?.();
     });
   }
 
@@ -114,7 +120,7 @@ export function OutfitChatScreen() {
     if (deletingChats || isSending) return;
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
-    setMessages(messagesFromSession(sessions.find((session) => session.id === sessionId), wardrobe));
+    setMessages(messagesFromSession(sessions.find((session) => session.id === sessionId), knownItemsRef.current));
     setDraft('');
     setFailedRequest(null);
     setPendingReplacement(null);
@@ -126,7 +132,7 @@ export function OutfitChatScreen() {
     activeSessionIdRef.current = next?.id ?? null;
     setActiveSessionId(next?.id ?? null);
     setSessions(nextSessions);
-    setMessages(messagesFromSession(next, wardrobe));
+    setMessages(messagesFromSession(next, knownItemsRef.current));
     setDraft('');
     setFailedRequest(null);
     setPendingReplacement(null);
@@ -183,7 +189,11 @@ export function OutfitChatScreen() {
     setIsLoadingWardrobe(true);
     setLoadError(false);
     Promise.all([getClothingItems(userId), getOutfitHistory(userId), getChatSessions(userId)])
-      .then(([items, savedHistory, savedSessions]) => {
+      .then(async ([items, savedHistory, savedSessions]) => {
+        // Sessions may reference pieces older than the latest 100: fetch those by id so they still render.
+        const referenced = savedSessions.flatMap((session) => session.messages.flatMap((entry) => entry.role === 'assistant' ? entry.selectedIds : []));
+        const extra = await loadMissingClothing(userId, items, referenced).catch(() => [] as ClothingItem[]);
+        knownItemsRef.current = [...items, ...extra];
         if (active && mutation === chatMutationRef.current) {
           setWardrobe(items);
           setHistory(savedHistory);
@@ -195,7 +205,7 @@ export function OutfitChatScreen() {
             : previousId;
           activeSessionIdRef.current = selectedId;
           setActiveSessionId(selectedId);
-          setMessages(messagesFromSession(savedSessions.find((session) => session.id === selectedId), items));
+          setMessages(messagesFromSession(savedSessions.find((session) => session.id === selectedId), knownItemsRef.current));
           setFailedRequest(null);
           setPendingReplacement(null);
         }
@@ -290,7 +300,7 @@ export function OutfitChatScreen() {
         activeSessionIdRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions((previous) => [saved.session, ...previous.filter((row) => row.id !== saved.session.id)].slice(0, 20));
-        setMessages(messagesFromSession(saved.session, currentWardrobe));
+        setMessages(messagesFromSession(saved.session, knownItemsRef.current));
         userMessageSaved = true;
       }
       if (!sessionId) throw new Error('Sohbet bulunamadı.');
@@ -305,7 +315,7 @@ export function OutfitChatScreen() {
         const saved = await appendChatMessage(userId, sessionId, { role: 'assistant', text: recommendation.mesaj, selectedIds: recommendation.secilen_idler });
         if (!mountedRef.current) return;
         setSessions((previous) => [saved.session, ...previous.filter((row) => row.id !== saved.session.id)].slice(0, 20));
-        setMessages(messagesFromSession(saved.session, currentWardrobe));
+        setMessages(messagesFromSession(saved.session, knownItemsRef.current));
       } catch {
         if (mountedRef.current) {
           setMessages((current) => [...current, { id: `${Date.now()}-assistant`, role: 'assistant', text: recommendation.mesaj, items, selectedIds: recommendation.secilen_idler }]);
@@ -351,7 +361,7 @@ export function OutfitChatScreen() {
 
   return (
     <ScreenFrame>
-      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
         <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} onClearPress={sessions.length > 0 && !deletingChats && !isSending ? confirmClearChats : undefined} centerTitle showNotifications />
         <PlanBanner chat />
         {isLoadingWardrobe ? (
@@ -360,7 +370,7 @@ export function OutfitChatScreen() {
           <View style={styles.centerState}>
             <Text style={styles.stateTitle}>Gardırop okunamadı</Text>
             <Text style={styles.stateText}>Kayıtlı parçalarını yeniden yükleyebilirsin.</Text>
-            <Pressable style={styles.stateButton} onPress={() => setReloadKey((value) => value + 1)}><Text style={styles.stateButtonText}>Tekrar dene</Text></Pressable>
+            <Pressable style={styles.stateButton} accessibilityRole="button" accessibilityLabel="Tekrar dene" onPress={() => setReloadKey((value) => value + 1)}><Text style={styles.stateButtonText}>Tekrar dene</Text></Pressable>
           </View>
         ) : (
           <ScrollView
@@ -374,14 +384,14 @@ export function OutfitChatScreen() {
               <View style={styles.noticeCard}>
                 <Feather name="heart" size={25} color={colors.pink} />
                 <Text style={styles.noticeText}>Kombin yapabilmem için önce gardırobuna birkaç parça eklemelisin.</Text>
-                <Pressable style={styles.stateButton} onPress={() => navigation.navigate('Wardrobe')}><Text style={styles.stateButtonText}>Gardıroba git</Text></Pressable>
+                <Pressable style={styles.stateButton} accessibilityRole="button" accessibilityLabel="Gardıroba git" onPress={() => navigation.navigate('Wardrobe')}><Text style={styles.stateButtonText}>Gardıroba git</Text></Pressable>
               </View>
             )}
             {wardrobe.length >= 2 && !hasAvailableMain && (
               <View style={styles.noticeCard}>
                 <Feather name="clock" size={25} color={colors.sage} />
                 <Text style={styles.noticeText}>Ana parçaların son 5 kombinde kullanıldı. Yeni kombin için başka bir ana parça ekle.{canChangeLast ? ' Son kombininden parça değişimi de isteyebilirsin.' : ''}</Text>
-                <Pressable style={styles.stateButton} onPress={() => navigation.navigate('Wardrobe')}><Text style={styles.stateButtonText}>Gardıroba git</Text></Pressable>
+                <Pressable style={styles.stateButton} accessibilityRole="button" accessibilityLabel="Gardıroba git" onPress={() => navigation.navigate('Wardrobe')}><Text style={styles.stateButtonText}>Gardıroba git</Text></Pressable>
               </View>
             )}
             {messages.length === 0 && wardrobe.length >= 2 && hasAvailableMain && (
@@ -406,7 +416,7 @@ export function OutfitChatScreen() {
               <View style={styles.thinkingBubble}><ActivityIndicator size="small" color={colors.sage} /><Text style={styles.thinkingText}>Düşünüyor...</Text></View>
             )}
             {failedRequest && !isSending && (
-              <Pressable style={styles.retryButton} onPress={() => sendMessage(failedRequest.prompt, false, failedRequest.replacement)}>
+              <Pressable style={styles.retryButton} accessibilityRole="button" accessibilityLabel="Öneriyi tekrar dene" onPress={() => sendMessage(failedRequest.prompt, false, failedRequest.replacement)}>
                 <Feather name="refresh-cw" size={14} color={colors.pink} />
                 <Text style={styles.retryText}>Öneriyi tekrar dene</Text>
               </Pressable>
@@ -452,6 +462,8 @@ export function OutfitChatScreen() {
                     key={id}
                     style={[styles.modalOption, alternativeCount === 0 && styles.modalOptionDisabled]}
                     disabled={alternativeCount === 0}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${item.tags.tur} parçasını değiştir`}
                     onPress={() => {
                       const pending = pendingReplacement;
                       setPendingReplacement(null);
@@ -460,7 +472,7 @@ export function OutfitChatScreen() {
                   >
                     <Image source={{ uri: item.imageUri }} style={styles.modalPhoto} resizeMode="cover" />
                     <View style={styles.modalOptionText}>
-                      <Text style={styles.modalItemName}>{item.tags.renk} {item.tags.tur}</Text>
+                      <Text style={styles.modalItemName}>{item.tags.tur}</Text>
                       <Text style={styles.modalItemHint}>{alternativeCount > 0 ? `${alternativeCount} alternatif` : 'Uygun alternatif yok'}</Text>
                     </View>
                     <Feather name="chevron-right" size={17} color={colors.sage} />
@@ -468,7 +480,7 @@ export function OutfitChatScreen() {
                 );
               })}
             </ScrollView>
-            <Pressable style={styles.modalCancel} onPress={() => setPendingReplacement(null)}><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
+            <Pressable style={styles.modalCancel} accessibilityRole="button" accessibilityLabel="Vazgeç" onPress={() => setPendingReplacement(null)}><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
           </View>
         </View>
       </Modal>

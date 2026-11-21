@@ -37,7 +37,7 @@ async function main() {
   await assert.rejects(() => analyze('user-1', ''), /Fotoğraf verisi okunamadı/);
 
   const invalid = load(async () => ({ tags: { tur: 'şapka', renk: '', desen: 'Düz' } }));
-  await assert.rejects(() => invalid('user-1', 'ZmFrZQ=='), /Invalid tag response/);
+  await assert.rejects(() => invalid('user-1', 'ZmFrZQ=='), /etiket yanıtı geçersiz/);
   console.log('Worker görsel analiz sözleşmesi ve JSON doğrulaması geçti.');
 }
 

@@ -8,4 +8,7 @@ export const REVENUECAT_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID
 export const REVENUECAT_MONTHLY_PRODUCT_ID = process.env.EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID?.trim() || 'ne_giysem_pro_monthly';
 export const REVENUECAT_YEARLY_PRODUCT_ID = process.env.EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID?.trim() || 'ne_giysem_pro_yearly';
 
-export const SUPPORT_EMAIL = process.env.EXPO_PUBLIC_SUPPORT_EMAIL?.trim() || 'cigdemgokdas01@gmail.com';
+export const SUPPORT_EMAIL = process.env.EXPO_PUBLIC_SUPPORT_EMAIL?.trim() || 'support@negiysem.app';
+
+/** Optional crash reporting. Telemetry stays fully disabled when this is empty. */
+export const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN?.trim() ?? '';

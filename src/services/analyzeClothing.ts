@@ -5,14 +5,14 @@ import { workerPost } from './workerApi';
 const CLOTHING_TYPES = ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'];
 
 function parseTags(value: unknown): ClothingTags {
-  if (!value || typeof value !== 'object') throw new Error('Invalid tag response');
+  if (!value || typeof value !== 'object') throw new Error('Yapay zekâ etiket yanıtı geçersiz geldi. Etiketleri elle doldurabilir veya tekrar deneyebilirsin.');
   const tags = value as Partial<ClothingTags>;
   if (
     typeof tags.tur !== 'string' || !CLOTHING_TYPES.includes(tags.tur)
     || typeof tags.renk !== 'string' || !tags.renk.trim()
     || typeof tags.desen !== 'string' || !tags.desen.trim()
   ) {
-    throw new Error('Invalid tag response');
+    throw new Error('Yapay zekâ etiket yanıtı geçersiz geldi. Etiketleri elle doldurabilir veya tekrar deneyebilirsin.');
   }
   const shortList = (input: unknown, maxItems: number) => Array.isArray(input)
     ? input.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, maxItems).map(item => item.trim().slice(0, 40))

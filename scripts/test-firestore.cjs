@@ -8,7 +8,7 @@ const denied = async (name, action) => { await assertFails(action()); tests++; c
 const now = () => new Date().toISOString();
 const day = () => { const d=new Date(); return Timestamp.fromMillis(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate())); };
 const profile = (name='user') => ({ username:name, usernameLower:name, avatarUri:null, avatarKey:null, bio:'', role:'user', authProvider:'local', shareGallery:false, shareBoards:false, createdAt:serverTimestamp() });
-const garment = (uid) => ({ userId:uid,imageUri:`https://worker.example/media/wardrobe/${uid}/12345678-1234-1234-1234-123456789012.jpg?token=12345678-1234-1234-1234-123456789012`,storageKey:`wardrobe/${uid}/12345678-1234-1234-1234-123456789012.jpg`,tur:'üst',renk:'siyah',desen:'düz',kesim:'normal',altTur:'tişört',kemerUygun:false,createdAt:now() });
+const garment = (uid) => ({ userId:uid,imageUri:`https://ne-giysem-api.demo-account.workers.dev/media/wardrobe/${uid}/12345678-1234-1234-1234-123456789012.jpg?token=12345678-1234-1234-1234-123456789012`,storageKey:`wardrobe/${uid}/12345678-1234-1234-1234-123456789012.jpg`,tur:'üst',renk:'siyah',desen:'düz',kesim:'normal',altTur:'tişört',kemerUygun:false,createdAt:now() });
 async function charged(db, uid, entries, paths=entries.map(([path])=>path)) {
  const budget=doc(db,'write_limits',uid), previous=await getDoc(budget);
  const count=previous.data()?.day?.isEqual(day()) ? previous.data().count : 0;
@@ -67,6 +67,33 @@ async function main() {
  await denied('private post direct read',()=>getDoc(doc(b,'posts','private')));
  await denied('profile query without public constraint',()=>getDocs(query(collection(b,'posts'),where('userId','==','alice'),limit(20))));
  await denied('blocked comment',()=>charged(b,'bob',[['comments/blocked',{userId:'bob',postId:'public',postType:'gallery',text:'hello',createdAt:now()}]]));
+ const IMG='https://ne-giysem-api.demo-account.workers.dev/media/gallery/alice/12345678-1234-1234-1234-123456789012.jpg?token=12345678-1234-1234-1234-123456789012';
+ const KEYG='gallery/alice/12345678-1234-1234-1234-123456789012.jpg';
+ const galleryPost=(extra={})=>({userId:'alice',kind:'gallery',title:'Kombin',imageUri:IMG,storageKey:KEYG,createdAt:now(),isPublic:false,...extra});
+ await passes('post create with current createdAt and worker media host',()=>charged(a,'alice',[['posts/fresh',galleryPost()]]));
+ await denied('post with attacker-hosted image',()=>charged(a,'alice',[['posts/evil',galleryPost({imageUri:'https://evil.example/media/x.jpg'})]]));
+ await denied('post with look-alike host',()=>charged(a,'alice',[['posts/evil2',galleryPost({imageUri:'https://ne-giysem-api.evil.example/media/x.jpg'})]]));
+ await denied('future-dated createdAt',()=>charged(a,'alice',[['posts/future',galleryPost({createdAt:'2099-01-01T00:00:00.000Z'})]]));
+ await denied('year-old createdAt',()=>charged(a,'alice',[['posts/old',galleryPost({createdAt:'2020-01-01T00:00:00.000Z'})]]));
+ await passes('yesterday createdAt tolerated (midnight clock skew)',()=>charged(a,'alice',[['posts/yesterday',galleryPost({createdAt:new Date(Date.now()-86400000).toISOString()})]]));
+ const boardItem=(uri)=>({id:'i1',imageUri:uri,tags:{tur:'üst',renk:'siyah',desen:'düz'}});
+ const boardPost=(uri)=>({userId:'alice',kind:'board',title:'Pano',imageUri:null,itemIds:['i1'],items:[boardItem(uri)],createdAt:now(),isPublic:false});
+ await passes('board post with worker-hosted items',()=>charged(a,'alice',[['posts/board1',boardPost(garment('alice').imageUri)]]));
+ await denied('board post with foreign-hosted item image',()=>charged(a,'alice',[['posts/board2',boardPost('https://evil.example/media/x.jpg')]]));
+ await denied('avatar on foreign host',()=>charged(a,'alice',[['users/alice',{avatarUri:'https://evil.example/media/a.jpg'},true]]));
+ await denied('usernameLower must match username',()=>charged(a,'alice',[['users/alice',{username:'Alice',usernameLower:'someoneelse'},true]]));
+ await passes('usernameLower lower-cased (root and tr-TR forms)',()=>charged(a,'alice',[['users/alice',{username:'Irmak',usernameLower:'irmak'},true]]));
+ await passes('tr-TR lower-casing accepted',()=>charged(a,'alice',[['users/alice',{username:'Irmak',usernameLower:'ırmak'},true]]));
+ await denied('reporter cannot delete own report',()=>deleteDoc(doc(a,'reports','alice_bob')));
+ await passes('report on a user (new schema)',()=>charged(a,'alice',[['reports/alice_user_bob',{reporterId:'alice',reportedId:'bob',targetType:'user',targetId:'bob',reason:'Taciz',createdAt:now()}]]));
+ await passes('report on a post (new schema)',()=>charged(b,'bob',[['reports/bob_post_public',{reporterId:'bob',reportedId:'alice',targetType:'post',targetId:'public',reason:'Uygunsuz',createdAt:now()}]]));
+ await denied('report with mismatched author',()=>charged(b,'bob',[['reports/bob_post_private',{reporterId:'bob',reportedId:'moderator',targetType:'post',targetId:'public',reason:'Uygunsuz',createdAt:now()}]]));
+ await denied('report with wrong document id',()=>charged(b,'bob',[['reports/anything',{reporterId:'bob',reportedId:'alice',targetType:'user',targetId:'alice',reason:'x',createdAt:now()}]]));
+ await denied('report reason too long',()=>charged(b,'bob',[['reports/bob_user_alice',{reporterId:'bob',reportedId:'alice',targetType:'user',targetId:'alice',reason:'x'.repeat(301),createdAt:now()}]]));
+ await denied('reporter cannot update report',()=>updateDoc(doc(b,'reports','bob_post_public'),{reason:'değişti'}));
+ await denied('blocked party cannot read who blocked them',()=>getDoc(doc(b,'blocked_users','alice_bob')));
+ await denied('blocked party cannot list blocks',()=>getDocs(query(collection(b,'blocked_users'),where('blockedId','==','bob'),limit(50))));
+ await passes('blocker reads own block',()=>getDoc(doc(a,'blocked_users','alice_bob')));
  await passes('unblock by creator',()=>deleteDoc(doc(a,'blocked_users','alice_bob')));
  await passes('like public post',()=>charged(b,'bob',[['likes/bob_public',{userId:'bob',postId:'public',postType:'gallery',createdAt:now()}]]));
  await passes('bounded aggregation',()=>getCountFromServer(query(collection(b,'likes'),where('postId','==','public'),limit(50))));
@@ -81,6 +108,9 @@ async function main() {
  await passes('delete still available at quota',()=>deleteDoc(doc(a,'wardrobe','item')));
  await denied('quota reset attack',()=>deleteDoc(doc(a,'write_limits','alice')));
  await env.withSecurityRulesDisabled(async ctx=>setDoc(doc(ctx.firestore(),'account_deletions','alice'),{started:Timestamp.now()}));
+ await passes('account settings bootstrap before verification',()=>setDoc(doc(u,'account_settings','newuser'),{aiConsent:false,termsVersion:'2026-10-03',termsAcceptedAt:serverTimestamp()}));
+ await denied('account settings re-created after deletion tombstone',()=>setDoc(doc(a,'account_settings','alice'),{aiConsent:false,termsVersion:'2026-10-03',termsAcceptedAt:serverTimestamp()}));
+ await denied('users delete without write budget',()=>deleteDoc(doc(b,'users','bob')));
  await denied('deleted-account stale token reads',()=>getDocs(query(collection(a,'posts'),where('userId','==','alice'),limit(20))));
  console.log(`${tests} Firestore security cases passed.`);
  } finally {await env.cleanup();}

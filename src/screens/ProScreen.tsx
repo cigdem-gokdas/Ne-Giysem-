@@ -9,6 +9,7 @@ import { LegalLinks } from '../components/LegalLinks';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenFrame } from '../components/ScreenFrame';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { DAILY_AI_LIMIT, DAILY_UPLOAD_LIMIT, FREE_CHAT_LIMIT, FREE_WARDROBE_LIMIT } from '../config/plans';
 import { colors, fonts } from '../theme';
 import { friendlyError, reportError, track } from '../services/telemetry';
 
@@ -40,21 +41,21 @@ export function ProScreen({ navigation }: NativeStackScreenProps<RootStackParamL
     } catch (err) { if (!(err as { userCancelled?: boolean })?.userCancelled) { if (pkg) track('purchase_failed'); reportError(pkg ? 'purchase' : 'restore_purchase', err); setError(friendlyError(err, 'Mağaza işlemi tamamlanamadı. Biraz sonra tekrar dene.')); } }
     finally { setBusy(false); }
   }
-  return <ScreenFrame><ScrollView contentContainerStyle={styles.content}>
-    <Pressable accessibilityRole="button" onPress={() => navigation.goBack()} style={styles.back}><Text style={styles.copy}>‹ Geri</Text></Pressable>
+  return <ScreenFrame includeBottom><ScrollView contentContainerStyle={styles.content}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Geri dön" onPress={() => navigation.goBack()} style={styles.back}><Text style={styles.copy}>‹ Geri</Text></Pressable>
     <Text style={styles.eyebrow}>DOLABININ YENİ BÖLÜMÜ</Text><Text style={styles.title}>Ne Giysem <Text style={{ color: colors.gold }}>Pro</Text></Text>
     <Text style={styles.copy}>Tarzına daha fazla yer aç.</Text>
     <View style={styles.card}><Text style={styles.feature}>✦  Kıyafet sayısı sınırı olmadan gardırop</Text><Text style={styles.feature}>✦  Fotoğraf eklerken otomatik AI etiketleri</Text><Text style={styles.feature}>✦  Kişisel kombin sohbetine erişim</Text><Text style={styles.small}>AI için veri paylaşım iznin gerekir. Günlük AI ve fotoğraf yükleme sınırları ile hizmet kapasitesi geçerlidir.</Text></View>
-    <Text style={styles.copy}>Ücretsiz: 50 parça, elle etiketleme ve hesap başına toplam 3 sohbet hakkı.</Text>
+    <Text style={styles.copy}>{`Ücretsiz: ${FREE_WARDROBE_LIMIT} parça, elle etiketleme ve hesap başına toplam ${FREE_CHAT_LIMIT} sohbet hakkı.`}</Text>
     {status?.pro && <Text style={styles.active}>Pro üyeliğin etkin ✓</Text>}
     {loading && <ActivityIndicator color={colors.gold} />}
     {!status?.pro && packages.map(pkg => <View key={pkg.identifier} style={styles.option}><PrimaryButton disabled={busy || loading} label={`${pkg.packageType === 'ANNUAL' ? 'Yıllık' : 'Aylık'} Pro · ${pkg.product.priceString} / ${pkg.packageType === 'ANNUAL' ? 'yıl' : 'ay'}`} onPress={() => void purchase(pkg)} /></View>)}
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-    <Pressable disabled={busy} onPress={() => void purchase()} style={styles.link}><Text style={styles.copy}>Satın almaları geri yükle</Text></Pressable>
-    <Pressable disabled={busy || loading} onPress={() => setReload(value => value + 1)} style={styles.link}><Text style={styles.copy}>Durumu yenile</Text></Pressable>
-    <Pressable onPress={() => { void Linking.openURL(Platform.OS === 'ios' ? 'https://apps.apple.com/account/subscriptions' : 'https://play.google.com/store/account/subscriptions').catch(() => setError('Mağaza ayarları açılamadı.')); }} style={styles.link}><Text style={styles.copy}>Aboneliği yönet / iptal et</Text></Pressable>
-    <Text style={styles.small}>Ödeme mağaza hesabından alınır. Abonelik iptal edilmedikçe seçilen dönem ve mağazada gösterilen ücretle otomatik yenilenir. Hesabı silmek aboneliği iptal etmez. Pro sona erince mevcut kıyafetlerin korunur; 50 veya daha fazla parçan varsa yeni parça eklemek için sayı 50’nin altına inmelidir.</Text>
-    <Text style={styles.small}>AI şu anda günde en fazla 25 istek, fotoğraf yükleme günde en fazla 10 adettir. Ortak hizmet kotası dolarsa AI veya yeni yüklemeler geçici olarak durabilir.</Text>
+    <Pressable accessibilityRole="button" disabled={busy} onPress={() => void purchase()} style={styles.link}><Text style={styles.copy}>Satın almaları geri yükle</Text></Pressable>
+    <Pressable accessibilityRole="button" disabled={busy || loading} onPress={() => setReload(value => value + 1)} style={styles.link}><Text style={styles.copy}>Durumu yenile</Text></Pressable>
+    <Pressable accessibilityRole="link" onPress={() => { void Linking.openURL(Platform.OS === 'ios' ? 'https://apps.apple.com/account/subscriptions' : 'https://play.google.com/store/account/subscriptions').catch(() => setError('Mağaza ayarları açılamadı.')); }} style={styles.link}><Text style={styles.copy}>Aboneliği yönet / iptal et</Text></Pressable>
+    <Text style={styles.small}>Ödeme mağaza hesabından alınır. Abonelik iptal edilmedikçe seçilen dönem ve mağazada gösterilen ücretle otomatik yenilenir. Hesabı silmek aboneliği iptal etmez. Pro sona erince mevcut kıyafetlerin korunur; {FREE_WARDROBE_LIMIT} veya daha fazla parçan varsa yeni parça eklemek için sayı {FREE_WARDROBE_LIMIT}’nin altına inmelidir.</Text>
+    <Text style={styles.small}>AI şu anda günde en fazla {DAILY_AI_LIMIT} istek, fotoğraf yükleme günde en fazla {DAILY_UPLOAD_LIMIT} adettir. Ortak hizmet kotası dolarsa AI veya yeni yüklemeler geçici olarak durabilir.</Text>
     <LegalLinks />
   </ScrollView></ScreenFrame>;
 }

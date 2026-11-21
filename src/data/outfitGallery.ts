@@ -5,6 +5,7 @@ import { firestore } from '../config/firebase';
 import { deleteR2Object, uploadImageToR2 } from '../services/r2Storage';
 import { sanitizeUserText } from '../utils/sanitize';
 import { deleteOwnedPost } from './postCleanup';
+import { assertCleanText } from '../utils/moderation';
 
 export type GalleryEntry = { id: string; imageUri: string; note: string; createdAt: string; isPublic: boolean };
 type GalleryDoc = { userId: string; kind: 'gallery'; imageUri: string; storageKey: string; title: string; createdAt: string; isPublic: boolean };
@@ -19,6 +20,8 @@ export async function getGalleryEntries(userId: string): Promise<GalleryEntry[]>
 }
 
 export async function addGalleryEntry(userId: string, sourceUri: string, note: string): Promise<GalleryEntry> {
+  const cleanNote = sanitizeUserText(note, 160);
+  assertCleanText(cleanNote, 'Notun');
   const user = await getDoc(doc(firestore, 'users', userId));
   if (!user.exists()) throw new Error('Kullanıcı bulunamadı.');
   const ref = doc(collection(firestore, 'posts'));
@@ -28,7 +31,7 @@ export async function addGalleryEntry(userId: string, sourceUri: string, note: s
     kind: 'gallery',
     imageUri: upload.url,
     storageKey: upload.key,
-    title: sanitizeUserText(note, 160),
+    title: cleanNote,
     createdAt: new Date().toISOString(),
     isPublic: user.data().shareGallery === true,
   };
@@ -45,6 +48,8 @@ export async function deleteGalleryEntry(userId: string, id: string): Promise<vo
   const ref = doc(firestore, 'posts', id);
   const snapshot = await getDoc(ref);
   if (!snapshot.exists() || snapshot.data().userId !== userId || snapshot.data().kind !== 'gallery') throw new Error('Fotoğraf bulunamadı.');
-  await deleteR2Object(snapshot.data().storageKey);
+  const storageKey = snapshot.data().storageKey;
+  // Firestore first, then the image (best effort): never leave a post pointing at a deleted file.
   await deleteOwnedPost(userId, id, 'gallery');
+  await deleteR2Object(storageKey).catch(() => undefined);
 }

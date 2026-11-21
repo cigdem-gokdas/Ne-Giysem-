@@ -1,14 +1,16 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
-import { createUserWithEmailAndPassword, GoogleAuthProvider, onIdTokenChanged, reload, sendEmailVerification, signInWithCredential, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
+import { createUserWithEmailAndPassword, type UserCredential, GoogleAuthProvider, onIdTokenChanged, reload, sendEmailVerification, signInWithCredential, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { firebaseAuth, firestore } from '../config/firebase';
 import { deleteUserAccount } from '../data/account';
 import { ensureRegistrationAvailable, resolveLoginEmail, type GoogleProfile, type LocalUser } from '../data/auth';
 import { appleCredential } from './apple';
+import { sanitizeUsername } from '../utils/sanitize';
+import { findProfanity } from '../utils/moderation';
 import { authErrorMessage } from './authErrors';
 
 type AuthContextValue = {
-  user: LocalUser | null; sessionToken: string | null; initializing: boolean; initError: boolean; verificationEmail: string | null;
+  user: LocalUser | null; initializing: boolean; initError: boolean; verificationEmail: string | null;
   retryInit: () => void; login: (identifier: string, password: string) => Promise<void>;
   register: (username: string, email: string, password: string, acceptedTerms: boolean) => Promise<void>;
   confirmEmailVerification: () => Promise<void>; resendVerification: () => Promise<void>;
@@ -24,7 +26,9 @@ async function ensureProfile(current: User, preferredName?: string): Promise<Loc
   const ref = doc(firestore, 'users', current.uid);
   let snapshot = await getDoc(ref);
   if (!snapshot.exists()) {
-    const username = (preferredName?.trim() || current.displayName?.trim() || 'Stil Dostu').slice(0, 32);
+    // Provider display names are untrusted input: sanitize and fall back to a neutral name when unusable.
+    const candidate = sanitizeUsername(preferredName?.trim() || current.displayName?.trim() || '');
+    const username = candidate.length >= 3 && !findProfanity(candidate) ? candidate : 'Stil Dostu';
     await setDoc(ref, { username, usernameLower: username.toLocaleLowerCase('tr-TR'), avatarUri: null, avatarKey: null, bio: '', role: 'user', authProvider: provider(current), shareGallery: false, shareBoards: false, createdAt: serverTimestamp() });
     snapshot = await getDoc(ref);
   }
@@ -44,6 +48,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const mutation = useRef(false);
+  const droppedTokenEvent = useRef(false);
   const verificationSentAt = useRef(0);
   const refreshedVerifiedUser = useRef<string | null>(null);
   useEffect(() => {
@@ -51,7 +56,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     const unsubscribe = onIdTokenChanged(firebaseAuth, (current) => {
       const request = ++generation;
       // Do not unmount forms during registration or sign-in; secrets stay only in form memory.
-      if (mutation.current) return;
+      if (mutation.current) { droppedTokenEvent.current = true; return; }
       setUser((previous) => previous?.id === current?.uid ? previous : null); setInitError(false);
       void (async () => {
         try {
@@ -79,7 +84,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     mutation.current = true;
     try { await action(); }
     catch (error) { throw new Error(authErrorMessage(error)); }
-    finally { mutation.current = false; setInitializing(false); }
+    finally {
+      mutation.current = false; setInitializing(false);
+      // Token events that arrived mid-mutation were ignored; re-sync once so state matches the real session.
+      if (droppedTokenEvent.current) { droppedTokenEvent.current = false; setRetryKey((v) => v + 1); }
+    }
   }, []);
   const resendVerification = useCallback(async () => {
     const current = firebaseAuth.currentUser;
@@ -96,12 +105,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const register = useCallback((username: string, email: string, password: string, acceptedTerms: boolean) => run(async () => {
     if (!acceptedTerms) throw new Error('Kullanım koşullarını ve gizlilik metnini okumalısın.');
     const clean = await ensureRegistrationAvailable(username, email, password);
-    const result = await createUserWithEmailAndPassword(firebaseAuth, clean.email, password);
+    let result: UserCredential;
+    try { result = await createUserWithEmailAndPassword(firebaseAuth, clean.email, password); }
+    catch (error) {
+      // A previous attempt may have created the Firebase user and failed afterwards. Resume it (same password,
+      // still unverified) instead of leaving the person stuck on "email-already-in-use".
+      if ((error as { code?: string })?.code !== 'auth/email-already-in-use') throw error;
+      let existing: UserCredential;
+      try { existing = await signInWithEmailAndPassword(firebaseAuth, clean.email, password); } catch { throw error; }
+      if (existing.user.emailVerified) { await signOut(firebaseAuth); throw error; }
+      result = existing;
+    }
     setUser(null); setVerificationEmail(result.user.email);
-    await updateProfile(result.user, { displayName: clean.username });
-    await ensureProfile(result.user, clean.username);
-    await saveTerms(result.user.uid);
-    await resendVerification();
+    // Profile documents are re-created idempotently after verification too, so a failure here is not fatal.
+    void updateProfile(result.user, { displayName: clean.username }).catch(() => undefined); // cosmetic
+    const outcome = (await Promise.allSettled([ensureProfile(result.user, clean.username).then(() => saveTerms(result.user.uid))]))[0];
+    try { await resendVerification(); }
+    catch (error) {
+      if (outcome.status === 'rejected') throw error;
+      // The account exists and the user is on the verification screen where the link can be resent.
+    }
   }), [run, resendVerification]);
   const confirmEmailVerification = useCallback(() => run(async () => {
     const current = firebaseAuth.currentUser;
@@ -110,6 +133,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (!current.emailVerified) throw new Error('E-posta henüz doğrulanmadı. Bağlantıya dokunduktan sonra tekrar dene.');
     await current.getIdToken(true); // Refresh email_verified claim before any Firestore/Worker request.
     const next = await ensureProfile(current);
+    await saveTerms(current.uid); // idempotent: only creates the settings document when registration could not
     if (firebaseAuth.currentUser?.uid !== current.uid) throw new Error('Oturum değişti.');
     setUser(next); setVerificationEmail(null);
   }), [run]);
@@ -130,7 +154,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }), [run]);
   const logout = useCallback(async () => { await signOut(firebaseAuth); setUser(null); setVerificationEmail(null); }, []);
   const deleteAccount = useCallback(async (password?: string) => { if (!user) throw new Error('Oturum bulunamadı.'); await deleteUserAccount(user.id, password); setUser(null); setVerificationEmail(null); }, [user]);
-  const value = useMemo(() => ({ user, sessionToken: null, initializing, initError, verificationEmail, retryInit: () => setRetryKey((v) => v + 1), login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount }), [user, initializing, initError, verificationEmail, login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount]);
+  const value = useMemo(() => ({ user, initializing, initError, verificationEmail, retryInit: () => setRetryKey((v) => v + 1), login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount }), [user, initializing, initError, verificationEmail, login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 export function useAuth(): AuthContextValue { const value = useContext(AuthContext); if (!value) throw new Error('AuthProvider bulunamadı.'); return value; }

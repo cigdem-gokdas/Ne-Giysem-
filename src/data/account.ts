@@ -10,10 +10,15 @@ export async function deleteUserAccount(userId: string, currentPassword?: string
   let appleAuthorizationCode: string | undefined;
   try {
     // Reauthenticate BEFORE touching any stored data.
-    if (current.providerData.some((p) => p.providerId === 'password')) {
+    const hasPassword = current.providerData.some((p) => p.providerId === 'password');
+    const hasApple = current.providerData.some((p) => p.providerId === 'apple.com');
+    if (hasPassword) {
       if (!current.email || !currentPassword) throw new Error('Mevcut şifreni yazmalısın.');
       await reauthenticateWithCredential(current, EmailAuthProvider.credential(current.email, currentPassword));
-    } else if (current.providerData.some((p) => p.providerId === 'apple.com')) {
+    }
+    // A linked Apple identity must ALWAYS be revoked (Apple guideline 5.1.1(v)); the Worker requires the code
+    // even when a password provider also exists, so password + Apple users do both.
+    if (hasApple) {
       const apple = await appleCredential();
       await reauthenticateWithCredential(current, apple.credential);
       appleAuthorizationCode = apple.authorizationCode ?? undefined;

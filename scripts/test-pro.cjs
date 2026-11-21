@@ -1,13 +1,14 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), ts = require('typescript');
 const { webcrypto } = require('node:crypto');
-let now = Date.now(), paid = false, failRC = false, rcCalls = 0;
+let gateDepth = 0, now = Date.now(), paid = false, failRC = false, rcCalls = 0;
 class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
 const rows = new Map();
 const origin = 'https://worker.example';
 const uid = 'alice';
 const env = { FIREBASE_PROJECT_ID: 'demo-ne-giysem', REVENUECAT_SECRET_KEY: 'test', IMAGES: { head: async () => ({ customMetadata: { accessToken: 'media-token' } }) } };
 async function external(url, options) {
+ assert.equal(gateDepth, 0, 'B4: network call made inside blockConcurrencyWhile');
  if (url.startsWith('https://api.revenuecat.com')) { rcCalls++; return failRC ? new Response('', {status:503}) : Response.json({ subscriber: { entitlements: paid ? { pro: { product_identifier:'monthly', expires_date:new Date(now+3600000).toISOString() } } : {}, subscriptions: {monthly:{store:'app_store',is_sandbox:false}} } }); }
  if (url.endsWith(':runAggregationQuery')) return Response.json([{result:{aggregateFields:{total:{integerValue:String(rows.size)}}}}]);
  if (url.endsWith(':commit')) { const write=JSON.parse(options.body).writes[0], id=write.update.name.split('/').pop(); assert.equal(write.currentDocument.exists,false); assert.ok(!rows.has(id)); rows.set(id,write.update); return Response.json({}); }
@@ -22,7 +23,7 @@ function load(name) {
 }
 const { RateLimiter }=load('rateLimiter'), {verifiedPlan}=load('subscriptions');
 const values=new Map();let queue=Promise.resolve();
-const state={storage:{get:async k=>structuredClone(values.get(k)),put:async(k,v)=>values.set(k,structuredClone(v)),delete:async keys=>(Array.isArray(keys)?keys:[keys]).forEach(key=>values.delete(key))},blockConcurrencyWhile:fn=>{const next=queue.then(fn);queue=next.catch(()=>{});return next;}};
+const state={storage:{get:async k=>structuredClone(values.get(k)),put:async(k,v)=>values.set(k,structuredClone(v)),delete:async keys=>(Array.isArray(keys)?keys:[keys]).forEach(key=>values.delete(key))},blockConcurrencyWhile:fn=>{const next=queue.then(async()=>{gateDepth++;try{return await fn();}finally{gateDepth--;}});queue=next.catch(()=>{});return next;}};
 let limiter=new RateLimiter(state,env);
 const call=(path,input={})=>limiter.fetch(new Request('https://rate/'+path,{method:'POST',body:JSON.stringify({uid,...input})}));
 let passed=0;async function check(name,fn){await fn();passed++;console.log('PASS '+name);}
@@ -52,6 +53,23 @@ const wardrobe=(n)=>({ key:`wardrobe/alice/12345678-1234-1234-1234-${String(n).p
  const sandbox={subscriber:{...subscriber,subscriptions:{monthly:{store:'app_store',is_sandbox:true}}}};
  assert.equal(verifiedPlan(sandbox,{REVENUECAT_SANDBOX_USER_IDS:'review-user'},now,'review-user').pro,true);
  assert.equal(verifiedPlan(sandbox,{REVENUECAT_SANDBOX_USER_IDS:'review-user'},now,'attacker').pro,false);
+ });
+ await check('lifetime (expires_date null) and promotional entitlements count as Pro unless refunded',async()=>{
+ const life={subscriber:{entitlements:{pro:{product_identifier:'lifetime',expires_date:null}},subscriptions:{lifetime:{store:'app_store',is_sandbox:false}}}};
+ const plan=verifiedPlan(life,env,now);assert.equal(plan.pro,true);assert.ok(plan.expiresAt>now+10*365*86400000);assert.ok(Number.isFinite(new Date(plan.expiresAt).getTime()));
+ assert.equal(verifiedPlan({subscriber:{...life.subscriber,subscriptions:{lifetime:{store:'app_store',is_sandbox:false,refunded_at:'2026-01-01'}}}},env,now).pro,false);
+ assert.equal(verifiedPlan({subscriber:{...life.subscriber,subscriptions:{lifetime:{store:'app_store',is_sandbox:true}}}},env,now).pro,false);
+ const promo={subscriber:{entitlements:{pro:{product_identifier:'rc_promo_pro_lifetime',expires_date:null}},subscriptions:{}}};
+ assert.equal(verifiedPlan(promo,env,now).pro,true);
+ assert.equal(verifiedPlan({subscriber:{entitlements:{pro:{product_identifier:'rc_promo_pro_cat',expires_date:new Date(now+1000).toISOString()}},subscriptions:{rc_promo_pro_cat:{store:'promotional'}}}},env,now).pro,true);
+ assert.equal(verifiedPlan({subscriber:{entitlements:{pro:{product_identifier:'rc_promo_pro_cat',expires_date:new Date(now-1000).toISOString()}},subscriptions:{}}},env,now).pro,false);
+ assert.equal(verifiedPlan({subscriber:{entitlements:{pro:{product_identifier:'x'}},subscriptions:{x:{store:'app_store',is_sandbox:false}}}},env,now).pro,false);
+ assert.equal(verifiedPlan({subscriber:{entitlements:{pro:{product_identifier:'stripe_thing',expires_date:null}},subscriptions:{stripe_thing:{store:'stripe',is_sandbox:false}}}},env,now).pro,false);
+ });
+ await check('B6: idempotent retry echoes the stored tags, not the retry body',async()=>{
+  paid=true;now+=61000;const first=wardrobe(60);first.tags.renk='  lacivert\u200b ';assert.equal((await call('wardrobe-create',{wardrobe:first})).status,200);
+  const stored=rows.get(first.key.split('/').pop().split('.')[0]);assert.equal(stored.fields.renk.stringValue,'lacivert');
+  const retry={...first,tags:{...first.tags,renk:'kırmızı'}};const body=await (await call('wardrobe-create',{wardrobe:retry})).json();assert.equal(body.tags.renk,'lacivert');
  });
  await check('no server billing key means free plan only',async()=>{const {fetchPlan}=load('subscriptions');const plan=await fetchPlan(uid,{});assert.equal(plan.pro,false);assert.equal(plan.billingReady,false);});
  await check('personal quota metadata is purged while deletion safeguards remain',async()=>{

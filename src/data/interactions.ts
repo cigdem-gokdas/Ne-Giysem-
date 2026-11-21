@@ -1,20 +1,25 @@
-import { budgetWrites, limitedSet, limitedUpdate } from './writeBudget';
-import { limit, orderBy, collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
-import { getDocsWithIndexFallback } from './firestoreQuery';
+import { budgetTransaction, budgetWrites, limitedSet } from './writeBudget';
+import { limit, orderBy, startAfter, collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, query, where, type QueryDocumentSnapshot } from 'firebase/firestore';
+import { getDocsWithIndexFallbackInfo } from './firestoreQuery';
 import { firebaseAuth, firestore } from '../config/firebase';
 import { sanitizeUserText } from '../utils/sanitize';
+import { assertCleanText } from '../utils/moderation';
 
 export type PostType = 'gallery' | 'board';
 export type PostComment = { id: string; userId: string; username: string; avatarUri: string | null; text: string; createdAt: string; isOwner: boolean };
 export type AppNotification = { id: string; message: string; isRead: boolean; createdAt: string };
-export type ModerationReport = { id: string; reporterUsername: string; reportedUsername: string; reason: string; createdAt: string };
+export type ReportTargetType = 'user' | 'post' | 'comment';
+export type ModerationReport = { id: string; reporterUsername: string; reportedUsername: string; reason: string; createdAt: string; targetType: ReportTargetType };
+export type NotificationPage = { items: AppNotification[]; cursor?: QueryDocumentSnapshot; degraded: boolean };
+
+const NOTIFICATION_PAGE_SIZE = 25;
 
 async function assertNotBlocked(actorId: string, ownerId: string): Promise<void> {
   const [outgoing, incoming] = await Promise.all([
     getDoc(doc(firestore, 'blocked_users', `${actorId}_${ownerId}`)),
-    getDoc(doc(firestore, 'blocked_users', `${ownerId}_${actorId}`)),
+    getDoc(doc(firestore, 'blocked_users', `${ownerId}_${actorId}`)).then((snapshot) => snapshot.exists(), () => false), // rules hide who blocked me; blocking is enforced server-side
   ]);
-  if (outgoing.exists() || incoming.exists()) throw new Error('Bu paylaşımla etkileşim kuramazsın.');
+  if (outgoing.exists() || incoming) throw new Error('Bu paylaşımla etkileşim kuramazsın.');
 }
 
 async function visiblePost(actorId: string, postType: PostType, postId: string) {
@@ -32,10 +37,12 @@ async function createNotification(actorId: string, userId: string, postId: strin
 export async function toggleLike(userId: string, postType: PostType, postId: string): Promise<{ liked: boolean; likeCount: number }> {
   const post = await visiblePost(userId, postType, postId);
   const likeRef = doc(firestore, 'likes', `${userId}_${postId}`);
-  const existing = await getDoc(likeRef);
-  const liked = !existing.exists();
-  if (liked) await limitedSet(likeRef, { userId, postId, postType, createdAt: new Date().toISOString() });
-  else await deleteDoc(likeRef);
+  // Existence check and write happen in one transaction so rapid or concurrent taps cannot double-toggle.
+  const liked = await budgetTransaction(async (transaction) => {
+    const existing = await transaction.get(likeRef);
+    if (existing.exists()) return { result: false, deletes: [likeRef] };
+    return { result: true, writes: [{ ref: likeRef, data: { userId, postId, postType, createdAt: new Date().toISOString() } }] };
+  });
 
   const likeCount = (await getCountFromServer(query(collection(firestore, 'likes'), where('postId', '==', postId), limit(50)))).data().count;
   if (liked && post.data().userId !== userId) {
@@ -61,6 +68,7 @@ export async function getComments(userId: string, postType: PostType, postId: st
 export async function addComment(userId: string, postType: PostType, postId: string, input: string): Promise<PostComment> {
   const text = sanitizeUserText(input, 300);
   if (!text) throw new Error('Yorum boş bırakılamaz.');
+  assertCleanText(text, 'Yorumun');
   const [post, author] = await Promise.all([visiblePost(userId, postType, postId), getDoc(doc(firestore, 'users', userId))]);
   if (!author.exists()) throw new Error('Kullanıcı bulunamadı.');
   const ref = doc(collection(firestore, 'comments'));
@@ -77,25 +85,61 @@ export async function deleteComment(userId: string, commentId: string): Promise<
   await deleteDoc(ref);
 }
 
+export async function getNotificationsPage(userId: string, cursor?: QueryDocumentSnapshot): Promise<NotificationPage> {
+  const base = collection(firestore, 'notifications');
+  const tail = cursor ? [startAfter(cursor)] : [];
+  const { snapshot: rows, degraded } = await getDocsWithIndexFallbackInfo(
+    query(base, where('userId', '==', userId), orderBy('createdAt', 'desc'), ...tail, limit(NOTIFICATION_PAGE_SIZE)),
+    query(base, where('userId', '==', userId), ...tail, limit(NOTIFICATION_PAGE_SIZE)),
+  );
+  const items = rows.docs.map((row) => ({ id: row.id, message: sanitizeUserText(row.data().message, 180), isRead: row.data().isRead === true, createdAt: row.data().createdAt as string }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Without the ordered index the cursor order is undefined, so paging stops after the degraded page.
+  return { items, cursor: !degraded && rows.size === NOTIFICATION_PAGE_SIZE ? rows.docs[rows.docs.length - 1] : undefined, degraded };
+}
+
 export async function getNotifications(userId: string): Promise<AppNotification[]> {
-  const base = collection(firestore, 'notifications');
-  const rows = await getDocsWithIndexFallback(query(base, where('userId', '==', userId), orderBy('createdAt', 'desc'), limit(50)), query(base, where('userId', '==', userId), limit(50)));
-  return rows.docs.map((row) => ({ id: row.id, message: sanitizeUserText(row.data().message, 180), isRead: row.data().isRead === true, createdAt: row.data().createdAt })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100);
+  return (await getNotificationsPage(userId)).items;
 }
 
-export async function markNotificationsRead(userId: string): Promise<void> {
-  const base = collection(firestore, 'notifications');
-  const rows = await getDocsWithIndexFallback(query(base, where('userId', '==', userId), orderBy('createdAt', 'desc'), limit(50)), query(base, where('userId', '==', userId), limit(50)));
-  const unread = rows.docs.filter((row) => row.data().isRead !== true);
-  for (let offset = 0; offset < unread.length; offset += 2) {
-    await budgetWrites(unread.slice(offset, offset + 2).map((row) => ({ ref: row.ref, data: { isRead: true }, update: true })));
+/** Marks only the notifications the user is currently looking at (by id), never newer unseen ones.
+ * Returns how many were marked; throws a partial-failure message when a later chunk fails. */
+export async function markNotificationsRead(userId: string, ids: string[]): Promise<number> {
+  const unique = [...new Set(ids)];
+  let marked = 0;
+  for (let offset = 0; offset < unique.length; offset += 2) {
+    const chunk = unique.slice(offset, offset + 2);
+    try {
+      await budgetWrites(chunk.map((id) => ({ ref: doc(firestore, 'notifications', id), data: { isRead: true }, update: true })));
+      marked += chunk.length;
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : 'Bilinmeyen hata';
+      throw new Error(marked > 0 ? `${marked} bildirim okundu işaretlendi, kalanlar işaretlenemedi: ${reason}` : reason);
+    }
   }
+  return marked;
 }
 
-export async function reportUser(reporterId: string, reportedId: string, input: string): Promise<void> {
-  if (reporterId === reportedId) throw new Error('Kendini şikayet edemezsin.');
-  if (!(await getDoc(doc(firestore, 'users', reportedId))).exists()) throw new Error('Kullanıcı bulunamadı.');
-  await limitedSet(doc(firestore, 'reports', `${reporterId}_${reportedId}`), { reporterId, reportedId, reason: sanitizeUserText(input, 240) || 'Uygunsuz içerik', createdAt: new Date().toISOString() });
+/** Reports a user, post or comment. Document id and shape are fixed by the Firestore rules. */
+export async function reportContent(reporterId: string, targetType: ReportTargetType, targetId: string, input: string): Promise<void> {
+  let reportedId: string;
+  if (targetType === 'user') {
+    if (!(await getDoc(doc(firestore, 'users', targetId))).exists()) throw new Error('Kullanıcı bulunamadı.');
+    reportedId = targetId;
+  } else {
+    const target = await getDoc(doc(firestore, targetType === 'post' ? 'posts' : 'comments', targetId));
+    if (!target.exists() || typeof target.data().userId !== 'string') throw new Error(targetType === 'post' ? 'Paylaşım bulunamadı.' : 'Yorum bulunamadı.');
+    reportedId = target.data().userId;
+  }
+  if (reporterId === reportedId) throw new Error(targetType === 'user' ? 'Kendini şikayet edemezsin.' : 'Kendi içeriğini bildiremezsin.');
+  const ref = doc(firestore, 'reports', `${reporterId}_${targetType}_${targetId}`);
+  const already = await getDoc(ref).then((snapshot) => snapshot.exists(), () => false);
+  if (already) throw new Error('Bunu zaten bildirdin. İncelemeye alındı.');
+  await limitedSet(ref, { reporterId, reportedId, targetType, targetId, reason: sanitizeUserText(input, 300) || 'Uygunsuz içerik', createdAt: new Date().toISOString() });
+}
+
+export function reportUser(reporterId: string, reportedId: string, input: string): Promise<void> {
+  return reportContent(reporterId, 'user', reportedId, input);
 }
 
 export async function blockUser(blockerId: string, blockedId: string): Promise<void> {
@@ -114,8 +158,13 @@ export async function getModerationReports(adminId: string): Promise<ModerationR
   const rows = await getDocs(query(collection(firestore, 'reports'), limit(50)));
   const result: ModerationReport[] = [];
   for (const row of rows.docs) {
-    const [reporter, reported] = await Promise.all([getDoc(doc(firestore, 'users', row.data().reporterId)), getDoc(doc(firestore, 'users', row.data().reportedId))]);
-    result.push({ id: row.id, reporterUsername: reporter.data()?.username ?? 'Silinmiş kullanıcı', reportedUsername: reported.data()?.username ?? 'Silinmiş kullanıcı', reason: sanitizeUserText(row.data().reason, 240), createdAt: row.data().createdAt });
+    const userName = async (id: unknown) => {
+      // Legacy or anonymised reports carry reporterId 'deleted' (or none): show the placeholder instead of reading.
+      if (typeof id !== 'string' || !id || id === 'deleted') return undefined;
+      return (await getDoc(doc(firestore, 'users', id)).catch(() => null))?.data()?.username as string | undefined;
+    };
+    const [reporter, reported] = await Promise.all([userName(row.data().reporterId), userName(row.data().reportedId)]);
+    result.push({ id: row.id, reporterUsername: reporter ?? 'Silinmiş kullanıcı', reportedUsername: reported ?? 'Silinmiş kullanıcı', reason: sanitizeUserText(row.data().reason, 300), createdAt: row.data().createdAt, targetType: (['user', 'post', 'comment'] as const).find((type) => type === row.data().targetType) ?? 'user' });
   }
   return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

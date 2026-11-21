@@ -46,3 +46,7 @@ yarn-error.*
 # Emulator and audit outputs
 *-debug.log
 *-debug.*.log
+
+# macOS Icon files (Finder custom icon, name ends with CR)
+Icon?
+Icon\r

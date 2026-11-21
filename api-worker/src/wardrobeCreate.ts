@@ -1,5 +1,5 @@
 import { adminToken, type AdminEnv } from './accountDeletion';
-import { HttpError, validStorageKey } from './security';
+import { HttpError, cleanText, validStorageKey } from './security';
 
 export async function wardrobeCount(env: AdminEnv, uid: string): Promise<number> {
   const token = await adminToken(env);
@@ -19,14 +19,30 @@ export async function wardrobeCount(env: AdminEnv, uid: string): Promise<number>
 }
 
 // Called only inside the user's Durable Object serialization lock. Free creations cannot race.
+function fromFields(fields: any): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries<any>(fields ?? {})) {
+    if ('stringValue' in value) result[key] = value.stringValue;
+    else if ('booleanValue' in value) result[key] = value.booleanValue;
+    else if ('arrayValue' in value) result[key] = (value.arrayValue.values ?? []).map((item: any) => item.stringValue);
+  }
+  return result;
+}
+
 export async function createWardrobe(env: AdminEnv, uid: string, input: any, pro: boolean) {
+  if (!input || typeof input !== 'object') throw new HttpError(400, 'Kıyafet fotoğrafı geçersiz.');
   if (!validStorageKey(input.key, uid) || !input.key.startsWith('wardrobe/')) throw new HttpError(400, 'Kıyafet fotoğrafı geçersiz.');
-  const tags = input.tags;
-  if (!tags || !['üst','alt','dış giyim','ayakkabı','aksesuar'].includes(tags.tur)
+  const raw = input.tags;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError(400, 'Etiketler eksik veya geçersiz.');
+  // Normalise first (control / zero-width characters, whitespace), then validate the cleaned values. Tags flow into AI prompts.
+  const text = (value: unknown) => typeof value === 'string' ? cleanText(value) : value;
+  const list = (value: unknown) => Array.isArray(value) ? value.map(text) : value;
+  const tags = { ...raw, renk: text(raw.renk), desen: text(raw.desen), materialGuess: text(raw.materialGuess), secondaryColors: list(raw.secondaryColors), season: list(raw.season), styleTags: list(raw.styleTags) };
+  if ( !['üst','alt','dış giyim','ayakkabı','aksesuar'].includes(tags.tur)
     || !['dar','normal','bol','bilinmiyor'].includes(tags.kesim)
     || !['tişört','gömlek','kazak','pantolon','etek','ceket','kaban','ayakkabı','çanta','kemer','diğer'].includes(tags.altTur)
     || typeof tags.kemerUygun !== 'boolean'
-    || !['renk','desen','materialGuess'].every(k => typeof tags[k] === 'string' && tags[k].trim().length > 0 && tags[k].length <= 80)
+    || !['renk','desen','materialGuess'].every(k => typeof tags[k] === 'string' && tags[k].length > 0 && tags[k].length <= 80)
     || !['secondaryColors','season','styleTags'].every(k => Array.isArray(tags[k]) && tags[k].length <= (k === 'styleTags' ? 8 : 4) && tags[k].every((value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 40))
     || !['günlük','smart casual','resmi','bilinmiyor'].includes(tags.formality)) throw new HttpError(400, 'Etiketler eksik veya geçersiz.');
   const image = await env.IMAGES.head(input.key);
@@ -41,14 +57,16 @@ export async function createWardrobe(env: AdminEnv, uid: string, input: any, pro
   if (existing.ok) {
     const row = await existing.json<any>();
     if (row.fields?.userId?.stringValue !== uid) throw new HttpError(403, 'Kıyafet başka bir hesaba ait.');
-    return { id, imageUri: row.fields.imageUri.stringValue, tags };
+    const stored = fromFields(row.fields);
+    // Echo what is stored, not what this retry sent.
+    return { id, imageUri: stored.imageUri, tags: { tur: stored.tur, renk: stored.renk, desen: stored.desen, kesim: stored.kesim, altTur: stored.altTur, kemerUygun: stored.kemerUygun, secondaryColors: stored.secondaryColors ?? [], season: stored.season ?? [], styleTags: stored.styleTags ?? [], formality: stored.formality, materialGuess: stored.materialGuess } };
   }
   if (existing.status !== 404) throw new HttpError(503, 'Gardırop kontrol edilemedi.');
   if (!pro) {
     if (await wardrobeCount(env, uid) >= 50) throw new HttpError(403, 'Ücretsiz gardırobun 50 parça ile doldu. Bir parça sil veya Ne Giysem Pro’ya geç.', 'wardrobe_limit');
   }
   const imageUri = `${input.origin}/media/${input.key.split('/').map(encodeURIComponent).join('/')}?token=${encodeURIComponent(image.customMetadata.accessToken)}`;
-  const data = { userId: uid, imageUri, storageKey: input.key, tur: tags.tur, renk: tags.renk.trim(), desen: tags.desen.trim(), kesim: tags.kesim, altTur: tags.altTur, kemerUygun: tags.kemerUygun, secondaryColors: tags.secondaryColors, season: tags.season, styleTags: tags.styleTags, formality: tags.formality, materialGuess: tags.materialGuess.trim(), createdAt: new Date().toISOString() };
+  const data = { userId: uid, imageUri, storageKey: input.key, tur: tags.tur, renk: tags.renk, desen: tags.desen, kesim: tags.kesim, altTur: tags.altTur, kemerUygun: tags.kemerUygun, secondaryColors: tags.secondaryColors, season: tags.season, styleTags: tags.styleTags, formality: tags.formality, materialGuess: tags.materialGuess, createdAt: new Date().toISOString() };
   const fields = Object.fromEntries(Object.entries(data).map(([key, value]) => [key, typeof value === 'boolean' ? { booleanValue: value } : Array.isArray(value) ? { arrayValue: { values: value.map(item => ({ stringValue: item })) } } : { stringValue: value }]));
   const saved = await fetch(`${root}:commit`, { method: 'POST', headers, signal: AbortSignal.timeout(5000), body: JSON.stringify({ writes: [{ update: { name: `${database}/wardrobe/${id}`, fields }, currentDocument: { exists: false } }] }) });
   if (!saved.ok) throw new HttpError(503, 'Kıyafet kaydedilemedi. Yeniden deneyebilirsin.');

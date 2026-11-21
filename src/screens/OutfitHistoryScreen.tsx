@@ -12,7 +12,10 @@ import { SocialAvatar } from '../components/SocialAvatar';
 import { useAuth, useUserId } from '../auth/AuthContext';
 import { createMoodBoard, deleteMoodBoard, getMoodBoards, type MoodBoard } from '../data/moodBoards';
 import { addGalleryEntry, deleteGalleryEntry, getGalleryEntries, type GalleryEntry } from '../data/outfitGallery';
-import { getClothingItems, type ClothingItem } from '../data/wardrobe';
+import { getClothingPage, loadMissingClothing, type ClothingItem } from '../data/wardrobe';
+import type { QueryDocumentSnapshot } from 'firebase/firestore';
+import { suppressUploadOverlay } from '../services/uploadStatus';
+import { describeError, reportError } from '../services/telemetry';
 import { getPublicUser, updateAvatar, updateBio } from '../data/social';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
@@ -67,6 +70,10 @@ export function OutfitHistoryScreen() {
   const [entries, setEntries] = useState<GalleryEntry[]>([]);
   const [boards, setBoards] = useState<MoodBoard[]>([]);
   const [wardrobe, setWardrobe] = useState<ClothingItem[]>([]);
+  const [extraItems, setExtraItems] = useState<ClothingItem[]>([]);
+  const [wardrobeCursor, setWardrobeCursor] = useState<QueryDocumentSnapshot | undefined>();
+  const [loadingMoreItems, setLoadingMoreItems] = useState(false);
+  const bioDirty = useRef(false);
   const [activeSection, setActiveSection] = useState<'journal' | 'boards'>('journal');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -91,7 +98,7 @@ export function OutfitHistoryScreen() {
   const mounted = useRef(true);
   const columns = width >= 600 ? 3 : 2;
   const cardWidth = (width - 48 - 12 * (columns - 1)) / columns;
-  const wardrobeById = new Map(wardrobe.map((item) => [item.id, item]));
+  const wardrobeById = new Map([...extraItems, ...wardrobe].map((item) => [item.id, item]));
 
   useEffect(() => {
     mounted.current = true;
@@ -101,25 +108,49 @@ export function OutfitHistoryScreen() {
     };
   }, []);
 
+  // The note modal shows its own inline upload indicator: iOS cannot present the global overlay over it.
+  useEffect(() => {
+    if (selectedUri === null) return;
+    return suppressUploadOverlay();
+  }, [selectedUri]);
+
   useEffect(() => {
     if (!isFocused) return;
     let active = true;
     setLoading(true);
     setLoadError(false);
-    Promise.all([getGalleryEntries(userId), getMoodBoards(userId), getClothingItems(userId), getPublicUser(userId)])
-      .then(([savedPhotos, savedBoards, savedWardrobe, profile]) => {
+    Promise.all([getGalleryEntries(userId), getMoodBoards(userId), getClothingPage(userId), getPublicUser(userId)])
+      .then(async ([savedPhotos, savedBoards, page, profile]) => {
+        // Boards can reference pieces beyond the first 100 wardrobe items: fetch those by id.
+        const referenced = savedBoards.flatMap((board) => board.itemIds);
+        const extra = await loadMissingClothing(userId, page.items, referenced).catch(() => [] as ClothingItem[]);
         if (active) {
           setEntries(savedPhotos);
           setBoards(savedBoards);
-          setWardrobe(savedWardrobe);
+          setWardrobe(page.items);
+          setWardrobeCursor(page.cursor);
+          setExtraItems(extra);
           setAvatarUri(profile?.avatarUri ?? null);
-          setBio(profile?.bio ?? '');
+          // Never overwrite a bio the user is still editing.
+          if (!bioDirty.current) setBio(profile?.bio ?? '');
         }
       })
       .catch(() => { if (active) setLoadError(true); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [isFocused, reloadKey, userId]);
+
+  async function loadMoreItems() {
+    if (!wardrobeCursor || loadingMoreItems) return;
+    setLoadingMoreItems(true);
+    try {
+      const page = await getClothingPage(userId, wardrobeCursor);
+      setWardrobe((current) => [...current, ...page.items.filter((next) => !current.some((known) => known.id === next.id))]);
+      setWardrobeCursor(page.cursor);
+    } catch (error) {
+      Alert.alert('Yüklenemedi', describeError(error, 'Daha fazla parça yüklenemedi. Lütfen tekrar dene.'));
+    } finally { setLoadingMoreItems(false); }
+  }
 
   async function chooseAvatar() {
     if (savingProfile) return;
@@ -136,7 +167,8 @@ export function OutfitHistoryScreen() {
     } catch (error) {
       if (mounted.current) {
         setAvatarUri(previousUri);
-        Alert.alert('Fotoğraf güncellenemedi', error instanceof Error ? error.message : 'Lütfen tekrar dene.');
+        reportError('avatar_update', error);
+        Alert.alert('Fotoğraf güncellenemedi', describeError(error, 'Lütfen tekrar dene.'));
       }
     } finally { if (mounted.current) setSavingProfile(false); }
   }
@@ -148,11 +180,12 @@ export function OutfitHistoryScreen() {
     try {
       await updateBio(userId, bio);
       if (mounted.current) {
+        bioDirty.current = false;
         setBio(sanitizeUserText(bio, 160));
         Alert.alert('Kaydedildi', 'Biyografin güncellendi.');
       }
     } catch (error) {
-      if (mounted.current) Alert.alert('Kaydedilemedi', error instanceof Error ? error.message : 'Biyografin güncellenemedi.');
+      if (mounted.current) Alert.alert('Kaydedilemedi', describeError(error, 'Biyografin güncellenemedi.'));
     } finally { if (mounted.current) setSavingProfile(false); }
   }
 
@@ -178,7 +211,7 @@ export function OutfitHistoryScreen() {
       setBoardTitle('');
       setSelectedBoardIds([]);
     } catch (error) {
-      Alert.alert('Pano kaydedilemedi', error instanceof Error ? error.message : 'Lütfen tekrar dene.');
+      Alert.alert('Pano kaydedilemedi', describeError(error, 'Lütfen tekrar dene.'));
     } finally {
       setIsSavingBoard(false);
     }
@@ -191,8 +224,9 @@ export function OutfitHistoryScreen() {
       await deleteGalleryEntry(userId, pendingDelete.id);
       setEntries((current) => current.filter((item) => item.id !== pendingDelete.id));
       setPendingDelete(null);
-    } catch {
-      Alert.alert('Silinemedi', 'Kombin fotoğrafı silinemedi. Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('gallery_delete', error);
+      Alert.alert('Silinemedi', describeError(error, 'Kombin fotoğrafı silinemedi. Lütfen tekrar dene.'));
     } finally {
       setIsDeleting(false);
     }
@@ -205,8 +239,9 @@ export function OutfitHistoryScreen() {
       await deleteMoodBoard(userId, pendingBoardDelete.id);
       setBoards((current) => current.filter((board) => board.id !== pendingBoardDelete.id));
       setPendingBoardDelete(null);
-    } catch {
-      Alert.alert('Silinemedi', 'İlham panosu silinemedi. Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('board_delete', error);
+      Alert.alert('Silinemedi', describeError(error, 'İlham panosu silinemedi. Lütfen tekrar dene.'));
     } finally {
       setIsDeletingBoard(false);
     }
@@ -234,8 +269,9 @@ export function OutfitHistoryScreen() {
         setSelectedUri(result.assets[0].uri);
         setNote('');
       }
-    } catch {
-      Alert.alert('Fotoğraf açılamadı', 'Fotoğraf seçimi başarısız oldu. Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('photo_pick', error);
+      Alert.alert('Fotoğraf açılamadı', describeError(error, 'Fotoğraf seçimi başarısız oldu. Lütfen tekrar dene.'));
     } finally {
       setIsPicking(false);
     }
@@ -249,8 +285,9 @@ export function OutfitHistoryScreen() {
       setEntries((current) => [saved, ...current]);
       setSelectedUri(null);
       setNote('');
-    } catch {
-      Alert.alert('Kaydedilemedi', 'Kombin fotoğrafı cihazına kaydedilemedi. Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('gallery_add', error);
+      Alert.alert('Kaydedilemedi', describeError(error, 'Kombin fotoğrafı kaydedilemedi. Lütfen tekrar dene.'));
     } finally {
       setIsSaving(false);
     }
@@ -274,8 +311,8 @@ export function OutfitHistoryScreen() {
         </Pressable>
         <View style={styles.profileFields}>
           <Text style={styles.profileName}>{user?.username}</Text>
-          <TextInput style={styles.profileBio} value={bio} onChangeText={setBio} placeholder="Kısa bir biyografi yaz..." placeholderTextColor={colors.textFaint} maxLength={160} multiline accessibilityLabel="Biyografi" />
-          <Pressable style={[styles.bioSave, savingProfile && styles.disabled]} onPress={() => { void saveBio(); }} disabled={savingProfile}><Text style={styles.bioSaveText}>Profili Kaydet</Text></Pressable>
+          <TextInput style={styles.profileBio} value={bio} onChangeText={(value) => { bioDirty.current = true; setBio(value); }} placeholder="Kısa bir biyografi yaz..." placeholderTextColor={colors.textFaint} maxLength={160} multiline accessibilityLabel="Biyografi" />
+          <Pressable style={[styles.bioSave, savingProfile && styles.disabled]} onPress={() => { void saveBio(); }} disabled={savingProfile} accessibilityRole="button" accessibilityLabel="Profili kaydet"><Text style={styles.bioSaveText}>Profili Kaydet</Text></Pressable>
         </View>
       </View>
       <View style={styles.segmentedControl}>
@@ -301,7 +338,7 @@ export function OutfitHistoryScreen() {
       {loading ? (
         <View style={styles.centerState}><ActivityIndicator color={colors.sage} /><Text style={styles.stateText}>Galeri açılıyor...</Text></View>
       ) : loadError ? (
-        <View style={styles.centerState}><Text style={styles.emptyTitle}>Galeri açılamadı</Text><Pressable style={styles.retryButton} onPress={() => setReloadKey((value) => value + 1)}><Text style={styles.retryText}>Tekrar dene</Text></Pressable></View>
+        <View style={styles.centerState}><Text style={styles.emptyTitle}>Galeri açılamadı</Text><Pressable style={styles.retryButton} accessibilityRole="button" accessibilityLabel="Tekrar dene" onPress={() => setReloadKey((value) => value + 1)}><Text style={styles.retryText}>Tekrar dene</Text></Pressable></View>
       ) : activeSection === 'boards' && boards.length === 0 ? (
         <View style={styles.centerState}><View style={styles.emptyCard}><Feather name="layers" size={32} color={colors.lavender} /><Text style={styles.emptyTitle}>İlk panonu oluştur</Text><Text style={styles.stateText}>Gardırobundan birkaç parça seçip kendi kolajını biriktir.</Text></View></View>
       ) : activeSection === 'boards' ? (
@@ -314,7 +351,7 @@ export function OutfitHistoryScreen() {
         </View>
       </TouchableWithoutFeedback>
       <Modal visible={boardModalVisible} transparent animationType="fade" onRequestClose={() => { if (!isSavingBoard) setBoardModalVisible(false); }}>
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable style={styles.modalBackdrop} onPress={() => { if (!isSavingBoard) setBoardModalVisible(false); }} />
           <View style={styles.boardModalCard}>
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -331,20 +368,21 @@ export function OutfitHistoryScreen() {
                   {wardrobe.map((item) => {
                     const selected = selectedBoardIds.includes(item.id);
                     return (
-                      <Pressable key={item.id} style={[styles.chooserTile, selected && styles.chooserTileSelected]} onPress={() => toggleBoardItem(item.id)} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${item.tags.renk} ${item.tags.tur}`}>
+                      <Pressable key={item.id} style={[styles.chooserTile, selected && styles.chooserTileSelected]} onPress={() => toggleBoardItem(item.id)} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={item.tags.tur}>
                         <Image source={{ uri: item.imageUri }} style={styles.chooserPhoto} resizeMode="cover" />
                         {selected && <View style={styles.selectedMark}><Feather name="check" size={14} color={colors.ink} /></View>}
-                        <Text style={styles.chooserCaption} numberOfLines={1}>{item.tags.renk} {item.tags.tur}</Text>
+                        <Text style={styles.chooserCaption} numberOfLines={1}>{item.tags.tur}</Text>
                       </Pressable>
                     );
                   })}
                 </View>
               )}
+              {wardrobeCursor && <Pressable style={styles.cancelButton} onPress={() => { void loadMoreItems(); }} disabled={loadingMoreItems} accessibilityRole="button" accessibilityLabel="Daha fazla parça yükle"><Text style={styles.cancelText}>{loadingMoreItems ? 'Yükleniyor…' : 'Daha fazla parça yükle'}</Text></Pressable>}
               <Text style={styles.selectionCount}>{selectedBoardIds.length} parça seçildi</Text>
               <Pressable style={[styles.saveButton, (selectedBoardIds.length === 0 || isSavingBoard) && styles.disabled]} onPress={() => { void saveBoard(); }} disabled={selectedBoardIds.length === 0 || isSavingBoard} accessibilityRole="button" accessibilityLabel="Panoyu Kaydet">
                 {isSavingBoard ? <ActivityIndicator size="small" color={colors.ink} /> : <Text style={styles.saveText}>Panoyu Kaydet</Text>}
               </Pressable>
-              <Pressable style={styles.cancelButton} onPress={() => setBoardModalVisible(false)} disabled={isSavingBoard}><Text style={styles.cancelText}>Vazgeç</Text></Pressable>
+              <Pressable style={styles.cancelButton} onPress={() => setBoardModalVisible(false)} disabled={isSavingBoard} accessibilityRole="button" accessibilityLabel="Vazgeç"><Text style={styles.cancelText}>Vazgeç</Text></Pressable>
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
@@ -381,19 +419,20 @@ export function OutfitHistoryScreen() {
         <View style={styles.modalOverlay}><Pressable style={styles.modalBackdrop} onPress={() => setChoiceVisible(false)} />
           <View style={styles.modalCard}>
             <Text style={styles.modalEyebrow}>YENİ BİR SAYFA</Text><Text style={styles.modalTitle}>Fotoğrafı nasıl ekleyelim?</Text>
-            <Pressable style={styles.sourceButton} onPress={() => chooseSource('library')}><Feather name="image" size={20} color={colors.sage} /><Text style={styles.sourceText}>Galeriden seç</Text></Pressable>
-            <Pressable style={styles.sourceButton} onPress={() => chooseSource('camera')}><Feather name="camera" size={20} color={colors.pink} /><Text style={styles.sourceText}>Fotoğraf çek</Text></Pressable>
+            <Pressable style={styles.sourceButton} accessibilityRole="button" accessibilityLabel="Galeriden seç" onPress={() => chooseSource('library')}><Feather name="image" size={20} color={colors.sage} /><Text style={styles.sourceText}>Galeriden seç</Text></Pressable>
+            <Pressable style={styles.sourceButton} accessibilityRole="button" accessibilityLabel="Fotoğraf çek" onPress={() => chooseSource('camera')}><Feather name="camera" size={20} color={colors.pink} /><Text style={styles.sourceText}>Fotoğraf çek</Text></Pressable>
             <Pressable style={styles.cancelButton} onPress={() => setChoiceVisible(false)}><Text style={styles.cancelText}>Vazgeç</Text></Pressable>
           </View>
         </View>
       </Modal>
       <Modal visible={selectedUri !== null} transparent animationType="fade" onRequestClose={() => { if (!isSaving) setSelectedUri(null); }}>
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalCard}>
             <Text style={styles.modalEyebrow}>BUGÜNÜN KOMBİNİ</Text><Text style={styles.modalTitle}>Bir not düşmek ister misin?</Text>
             {selectedUri && <Image source={{ uri: selectedUri }} style={styles.preview} resizeMode="cover" />}
             <Text style={styles.previewDate}>{formatDate(new Date().toISOString())}</Text>
             <TextInput style={styles.noteInput} placeholder="Örn: Vintage ceketle okul günü" placeholderTextColor={colors.textFaint} value={note} onChangeText={setNote} maxLength={100} accessibilityLabel="Kombin fotoğrafı notu" />
+            {isSaving && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 }} accessibilityRole="progressbar" accessibilityLabel="Fotoğraf yükleniyor"><ActivityIndicator size="small" color={colors.sage} /><Text style={styles.stateText}>Fotoğraf güvenli alana yükleniyor…</Text></View>}
             <Pressable style={[styles.saveButton, isSaving && styles.disabled]} onPress={() => { void savePhoto(); }} disabled={isSaving} accessibilityRole="button" accessibilityLabel="Kombin fotoğrafını kaydet">
               {isSaving ? <ActivityIndicator size="small" color={colors.ink} /> : <Text style={styles.saveText}>Kaydet</Text>}
             </Pressable>

@@ -33,6 +33,7 @@ async function main() {
         deleteR2Object: async (key) => { calls.push(['delete', key]); },
       };
       if (name === '../utils/sanitize') return { sanitizeUserText: (value) => value };
+      if (name === '../utils/moderation') return { assertCleanText: () => undefined };
       throw new Error(`Unexpected import: ${name}`);
     },
   });

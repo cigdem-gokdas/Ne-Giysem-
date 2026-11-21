@@ -4,13 +4,13 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { useIsFocused, useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
-import { buildWardrobeSummary, getOutfitHistory, type WardrobeSummaryItem } from '../data/outfitHistory';
+import { buildWardrobeSummary, getOutfitHistory, type OutfitHistoryEntry } from '../data/outfitHistory';
 import { CLOTHING_TYPES, FIT_TYPES, SUBTYPES, deleteClothingItem, getClothingPage, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
@@ -25,7 +25,9 @@ export function WardrobeScreen() {
   const [cursor, setCursor] = useState<QueryDocumentSnapshot>();
   const [loadingMore, setLoadingMore] = useState(false);
   const [items, setItems] = useState<ClothingItem[]>([]);
-  const [usageById, setUsageById] = useState<Record<string, WardrobeSummaryItem>>({});
+  const [history, setHistory] = useState<OutfitHistoryEntry[]>([]);
+  const loadedOnce = useRef(false);
+  const usageById = useMemo(() => Object.fromEntries(buildWardrobeSummary(items, history).map((usage) => [usage.id, usage])), [items, history]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -39,17 +41,26 @@ export function WardrobeScreen() {
   useEffect(() => {
     if (!isFocused) return;
     let active = true;
-    setIsLoading(true);
+    // Refocus refreshes silently and keeps already loaded pages instead of resetting pagination.
+    const silent = loadedOnce.current;
+    if (!silent) setIsLoading(true);
     setLoadError(false);
     Promise.all([getClothingPage(userId), getOutfitHistory(userId).catch(() => [])])
-      .then(([page, history]) => {
-        const saved = page.items;
+      .then(([page, nextHistory]) => {
         if (!active) return;
-        setItems(saved);
-        setCursor(page.cursor);
-        setUsageById(Object.fromEntries(buildWardrobeSummary(saved, history).map((usage) => [usage.id, usage])));
+        loadedOnce.current = true;
+        setItems((current) => {
+          if (!silent) return page.items;
+          const firstPageIds = new Set(page.items.map((entry) => entry.id));
+          const oldest = page.items[page.items.length - 1];
+          // Keep older, already loaded pages only when the refreshed first page is full.
+          const kept = page.cursor ? current.filter((entry) => !firstPageIds.has(entry.id) && !!oldest) : [];
+          return [...page.items, ...kept];
+        });
+        setCursor((previous) => (silent && previous ? previous : page.cursor));
+        setHistory(nextHistory);
       })
-      .catch(() => { if (active) setLoadError(true); })
+      .catch(() => { if (active && !silent) setLoadError(true); })
       .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
   }, [isFocused, retryCount, userId]);
@@ -95,10 +106,6 @@ export function WardrobeScreen() {
 
   async function saveTags() {
     if (!selectedItem || isSaving) return;
-    if (!draftTags.renk.trim() || !draftTags.desen.trim()) {
-      Alert.alert('Eksik etiket', 'Renk ve desen alanlarını doldur.');
-      return;
-    }
     setIsSaving(true);
     try {
       const updated = await updateClothingTags(userId, selectedItem.id, draftTags);
@@ -115,16 +122,14 @@ export function WardrobeScreen() {
   function renderItem({ item }: { item: ClothingItem }) {
     const useCount = usageById[item.id]?.kullanim_sayisi ?? 0;
     return (
-      <Pressable style={[styles.clothingCard, { width: itemWidth }]} onPress={() => openActions(item)} onLongPress={() => openActions(item)} accessibilityLabel={`${item.tags.renk} ${item.tags.tur}, ${useCount} kombinde kullanıldı, detayları aç`}>
+      <Pressable style={[styles.clothingCard, { width: itemWidth }]} onPress={() => openActions(item)} onLongPress={() => openActions(item)} accessibilityRole="button" accessibilityLabel={`${item.tags.tur}, ${useCount} kombinde kullanıldı, detayları aç`}>
         <Image source={{ uri: item.imageUri }} style={styles.clothingImage} resizeMode="cover" accessibilityLabel="Kaydedilmiş kıyafet fotoğrafı" />
         <Pressable style={styles.cardAction} onPress={() => openActions(item)} accessibilityRole="button" accessibilityLabel="Kıyafet seçenekleri"><Feather name="more-horizontal" size={18} color={colors.text} /></Pressable>
         <View style={styles.clothingDetails}>
           <Text style={styles.itemCaption}>GARDIROP PARÇASI</Text>
           <View style={styles.tagChips}>
             <Text style={[styles.tagChip, styles.turChip]}>{item.tags.tur}</Text>
-            <Text style={[styles.tagChip, styles.renkChip]}>{item.tags.renk}</Text>
-            <Text style={[styles.tagChip, styles.desenChip]}>{item.tags.desen}</Text>
-            {item.tags.kesim && item.tags.kesim !== 'bilinmiyor' && <Text style={[styles.tagChip, styles.desenChip]}>{item.tags.kesim} kesim</Text>}
+            {item.tags.kesim && item.tags.kesim !== 'bilinmiyor' && <Text style={[styles.tagChip, styles.kesimChip]}>{item.tags.kesim} kesim</Text>}
           </View>
         </View>
       </Pressable>
@@ -169,7 +174,7 @@ export function WardrobeScreen() {
           ListFooterComponent={cursor ? <PrimaryButton label={loadingMore ? 'Yükleniyor…' : 'Daha fazla kıyafet göster'} disabled={loadingMore} onPress={() => void loadMore()} /> : null}
           ListHeaderComponent={
             <View style={styles.gridHeader}>
-              <Text style={styles.collectionCount}>KOLEKSİYON  /  {items.length} PARÇA</Text>
+              <Text style={styles.collectionCount}>KOLEKSİYON  /  {items.length}{cursor ? '+' : ''} PARÇA</Text>
               <PrimaryButton label="Yeni kıyafet ekle" icon="plus" onPress={() => navigation.navigate('AddClothing')} />
             </View>
           }
@@ -178,7 +183,7 @@ export function WardrobeScreen() {
       <Modal visible={selectedItem !== null} transparent animationType="fade" onRequestClose={closeModal}>
         <View style={styles.modalOverlay}>
           <Pressable style={styles.modalBackdrop} onPress={closeModal} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalKeyboard}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalKeyboard}>
             <View style={styles.modalCard}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalOverline}>GARDIROP DETAYI</Text>
@@ -190,7 +195,7 @@ export function WardrobeScreen() {
                     <Image source={{ uri: selectedItem.imageUri }} style={styles.modalImage} resizeMode="cover" />
                     <View style={styles.previewTextWrap}>
                       <Text style={styles.modalTitle}>{modalMode === 'edit' ? 'Etiketleri düzenle' : 'Bu parçayla ne yapalım?'}</Text>
-                      <Text style={styles.modalSubtitle}>{selectedItem.tags.renk} · {selectedItem.tags.tur}</Text>
+                      <Text style={styles.modalSubtitle}>{selectedItem.tags.tur}</Text>
                       <Text style={styles.modalSubtitle}>{selectedItem.tags.altTur !== 'diğer' ? `${selectedItem.tags.altTur} · ` : ''}{selectedItem.tags.kesim ?? 'kesim bilinmiyor'}{selectedItem.tags.kemerUygun ? ' · kemere uygun' : ''}</Text>
                     </View>
                   </View>
@@ -214,35 +219,31 @@ export function WardrobeScreen() {
                   </View>
                   {modalMode === 'actions' ? (
                     <View style={styles.actionList}>
-                      <Pressable style={styles.actionButton} onPress={() => setModalMode('edit')}><Feather name="edit-3" size={18} color={colors.sage} /><Text style={styles.actionText}>Etiketleri Düzenle</Text></Pressable>
-                      <Pressable style={[styles.actionButton, styles.deleteAction]} onPress={confirmDelete}><Feather name="trash-2" size={18} color={colors.pink} /><Text style={[styles.actionText, styles.deleteText]}>Sil</Text></Pressable>
+                      <Pressable style={styles.actionButton} onPress={() => setModalMode('edit')} accessibilityRole="button" accessibilityLabel="Etiketleri düzenle"><Feather name="edit-3" size={18} color={colors.sage} /><Text style={styles.actionText}>Etiketleri Düzenle</Text></Pressable>
+                      <Pressable style={[styles.actionButton, styles.deleteAction]} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Kıyafeti sil"><Feather name="trash-2" size={18} color={colors.pink} /><Text style={[styles.actionText, styles.deleteText]}>Sil</Text></Pressable>
                     </View>
                   ) : (
                     <View>
                       <Text style={styles.fieldLabel}>TÜR</Text>
                       <View style={styles.typeOptions}>
                         {CLOTHING_TYPES.map((type) => (
-                          <Pressable key={type} onPress={() => setDraftTags((current) => ({ ...current, tur: type, altTur: 'diğer', kemerUygun: false }))} style={[styles.typeChip, draftTags.tur === type && styles.typeChipSelected]}>
+                          <Pressable key={type} accessibilityRole="radio" accessibilityState={{ selected: draftTags.tur === type }} accessibilityLabel={`Tür: ${type}`} onPress={() => setDraftTags((current) => ({ ...current, tur: type, altTur: 'diğer', kemerUygun: false }))} style={[styles.typeChip, draftTags.tur === type && styles.typeChipSelected]}>
                             <Text style={[styles.typeChipText, draftTags.tur === type && styles.typeChipTextSelected]}>{type}</Text>
                           </Pressable>
                         ))}
                       </View>
-                      <Text style={styles.fieldLabel}>RENK</Text>
-                      <TextInput style={styles.formInput} value={draftTags.renk} onChangeText={(renk) => setDraftTags((current) => ({ ...current, renk }))} placeholder="Örn. bordo" placeholderTextColor={colors.textFaint} maxLength={40} />
-                      <Text style={styles.fieldLabel}>DESEN</Text>
-                      <TextInput style={styles.formInput} value={draftTags.desen} onChangeText={(desen) => setDraftTags((current) => ({ ...current, desen }))} placeholder="Örn. düz" placeholderTextColor={colors.textFaint} maxLength={40} />
                       <Text style={styles.fieldLabel}>KESİM</Text>
                       <View style={styles.typeOptions}>
-                        {FIT_TYPES.map((fit) => <Pressable key={fit} onPress={() => setDraftTags((current) => ({ ...current, kesim: fit }))} style={[styles.typeChip, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipTextSelected]}>{fit}</Text></Pressable>)}
+                        {FIT_TYPES.map((fit) => <Pressable key={fit} accessibilityRole="radio" accessibilityState={{ selected: (draftTags.kesim ?? 'bilinmiyor') === fit }} accessibilityLabel={`Kesim: ${fit}`} onPress={() => setDraftTags((current) => ({ ...current, kesim: fit }))} style={[styles.typeChip, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.kesim ?? 'bilinmiyor') === fit && styles.typeChipTextSelected]}>{fit}</Text></Pressable>)}
                       </View>
                       <Text style={styles.fieldLabel}>PARÇA TÜRÜ</Text>
                       <View style={styles.typeOptions}>
-                        {SUBTYPES.filter((subtype) => subtype === 'diğer' || (draftTags.tur === 'üst' && ['tişört', 'gömlek', 'kazak'].includes(subtype)) || (draftTags.tur === 'alt' && ['pantolon', 'etek'].includes(subtype)) || (draftTags.tur === 'dış giyim' && ['ceket', 'kaban'].includes(subtype)) || (draftTags.tur === 'ayakkabı' && subtype === 'ayakkabı') || (draftTags.tur === 'aksesuar' && ['çanta', 'kemer'].includes(subtype))).map((subtype) => <Pressable key={subtype} onPress={() => setDraftTags((current) => ({ ...current, altTur: subtype }))} style={[styles.typeChip, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipTextSelected]}>{subtype}</Text></Pressable>)}
+                        {SUBTYPES.filter((subtype) => subtype === 'diğer' || (draftTags.tur === 'üst' && ['tişört', 'gömlek', 'kazak'].includes(subtype)) || (draftTags.tur === 'alt' && ['pantolon', 'etek'].includes(subtype)) || (draftTags.tur === 'dış giyim' && ['ceket', 'kaban'].includes(subtype)) || (draftTags.tur === 'ayakkabı' && subtype === 'ayakkabı') || (draftTags.tur === 'aksesuar' && ['çanta', 'kemer'].includes(subtype))).map((subtype) => <Pressable key={subtype} accessibilityRole="radio" accessibilityState={{ selected: (draftTags.altTur ?? 'diğer') === subtype }} accessibilityLabel={`Parça türü: ${subtype}`} onPress={() => setDraftTags((current) => ({ ...current, altTur: subtype }))} style={[styles.typeChip, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipSelected]}><Text style={[styles.typeChipText, (draftTags.altTur ?? 'diğer') === subtype && styles.typeChipTextSelected]}>{subtype}</Text></Pressable>)}
                       </View>
                       {draftTags.tur === 'alt' && <Pressable style={styles.actionButton} onPress={() => setDraftTags((current) => ({ ...current, kemerUygun: !current.kemerUygun }))} accessibilityRole="checkbox" accessibilityState={{ checked: !!draftTags.kemerUygun }}><Feather name={draftTags.kemerUygun ? 'check-square' : 'square'} size={18} color={colors.sage} /><Text style={styles.actionText}>Kemer kullanmaya uygun</Text></Pressable>}
                       <View style={styles.editActions}>
-                        <Pressable style={styles.cancelButton} onPress={() => setModalMode('actions')} disabled={isSaving}><Text style={styles.cancelText}>Geri</Text></Pressable>
-                        <Pressable style={[styles.saveButton, isSaving && styles.disabledButton]} onPress={saveTags} disabled={isSaving}><Text style={styles.saveText}>{isSaving ? 'Kaydediliyor...' : 'Kaydet'}</Text></Pressable>
+                        <Pressable style={styles.cancelButton} onPress={() => setModalMode('actions')} disabled={isSaving} accessibilityRole="button" accessibilityLabel="Geri"><Text style={styles.cancelText}>Geri</Text></Pressable>
+                        <Pressable style={[styles.saveButton, isSaving && styles.disabledButton]} onPress={saveTags} disabled={isSaving} accessibilityRole="button" accessibilityLabel="Etiketleri kaydet"><Text style={styles.saveText}>{isSaving ? 'Kaydediliyor...' : 'Kaydet'}</Text></Pressable>
                       </View>
                     </View>
                   )}
@@ -283,8 +284,7 @@ const styles = StyleSheet.create({
   tagChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
   tagChip: { overflow: 'hidden', borderRadius: 7, color: colors.ink, fontFamily: fonts.sans, fontSize: 9, fontWeight: '700', paddingHorizontal: 7, paddingVertical: 5 },
   turChip: { backgroundColor: colors.sage },
-  renkChip: { backgroundColor: colors.pink },
-  desenChip: { backgroundColor: colors.lavender },
+  kesimChip: { backgroundColor: colors.lavender },
   modalOverlay: { flex: 1, justifyContent: 'center', paddingHorizontal: 22, backgroundColor: 'rgba(20, 12, 11, 0.75)' },
   modalBackdrop: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 },
   modalKeyboard: { width: '100%' },

@@ -23,9 +23,9 @@ export function VerifyEmailScreen({ navigation, route }: Props) {
   }
 
   return <ScreenFrame includeBottom>
-    <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.content}>
-        <Pressable style={styles.back} onPress={() => { void logout().catch(() => setError('Çıkış yapılamadı.')); }} accessibilityRole="button"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Geri dön</Text></Pressable>
+        <Pressable style={styles.back} onPress={() => { void logout().catch(() => setError('Çıkış yapılamadı.')); }} accessibilityRole="button" accessibilityLabel="Geri dön ve çıkış yap"><Feather name="arrow-left" size={18} color={colors.sage} /><Text style={styles.backText}>Geri dön</Text></Pressable>
         <View style={styles.icon}><Feather name="mail" size={30} color={colors.lavender} /></View>
         <Text style={styles.eyebrow}>E-POSTA DOĞRULAMA</Text>
         <Text style={styles.title}>Son bir küçük adım.</Text>
@@ -34,10 +34,10 @@ export function VerifyEmailScreen({ navigation, route }: Props) {
           <Text style={styles.label}>E-POSTANI KONTROL ET</Text>
           <Text style={styles.simulation}>E-posta uygulamanda bağlantıyı açtıktan sonra aşağıdaki düğmeye dokun.</Text>
           {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void verify(); }} disabled={busy} accessibilityRole="button">
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={() => { void verify(); }} disabled={busy} accessibilityRole="button" accessibilityLabel="E-postamı doğruladım">
             {busy ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.buttonText}>E-postamı Doğruladım</Text>}
           </Pressable>
-          <Pressable style={styles.button} disabled={busy} onPress={() => { setBusy(true); void resendVerification().then(() => Alert.alert('Bağlantı gönderildi', 'Gelen kutunu ve spam klasörünü kontrol et.')).catch((cause) => setError(cause.message)).finally(() => setBusy(false)); }}><Text style={styles.buttonText}>Bağlantıyı yeniden gönder</Text></Pressable>
+          <Pressable style={styles.button} disabled={busy} accessibilityRole="button" accessibilityLabel="Doğrulama bağlantısını yeniden gönder" onPress={() => { setBusy(true); void resendVerification().then(() => Alert.alert('Bağlantı gönderildi', 'Gelen kutunu ve spam klasörünü kontrol et.')).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Bağlantı gönderilemedi.')).finally(() => setBusy(false)); }}><Text style={styles.buttonText}>Bağlantıyı yeniden gönder</Text></Pressable>
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -55,7 +55,6 @@ const styles = StyleSheet.create({
   email: { color: colors.pink, fontWeight: '700' },
   card: { padding: 21, borderRadius: 19, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   label: { color: colors.gold, fontFamily: fonts.sans, fontSize: 9, fontWeight: '700', letterSpacing: 1.6 },
-  codeInput: { minHeight: 58, marginTop: 11, borderRadius: 11, borderWidth: 1, borderColor: colors.lavender, backgroundColor: colors.backgroundRaised, color: colors.text, fontFamily: fonts.serif, fontSize: 27, letterSpacing: 12, paddingLeft: 12 },
   simulation: { color: colors.textFaint, fontFamily: fonts.sans, fontSize: 11, textAlign: 'center', marginTop: 10 },
   error: { color: colors.pink, fontFamily: fonts.sans, fontSize: 12, textAlign: 'center', marginTop: 12 },
   button: { minHeight: 49, marginTop: 19, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.sage },

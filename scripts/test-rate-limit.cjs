@@ -49,6 +49,15 @@ async function main() {
   assert.equal((await call(limiter, 'reserve')).status, 200);
   values.set('usage', { date: new Date().toISOString().slice(0, 10), count: 7, lastRequestAt: Date.now() - 70_000, pending: { id: 'stale', previousDate: new Date().toISOString().slice(0, 10), previousCount: 7, previousLastRequestAt: 0 } });
   assert.equal((await call(limiter, 'reserve')).status, 200);
+  // S12 generic fixed-window limiter (per-user delete-object, per-IP media).
+  const limit = (body) => limiter.fetch(new Request('https://rate-limit/limit', { method: 'POST', body: JSON.stringify(body) }));
+  for (let i = 0; i < 3; i++) assert.equal((await limit({ name: 'delete-object', max: 3, windowMs: 60_000 })).status, 200);
+  const blocked = await limit({ name: 'delete-object', max: 3, windowMs: 60_000 });
+  assert.equal(blocked.status, 429); assert.ok((await blocked.json()).waitSeconds >= 1);
+  assert.equal((await limit({ name: 'media', max: 3, windowMs: 60_000 })).status, 200); // independent window per name
+  assert.equal((await limit({ name: 'Bad Name', max: 3, windowMs: 60_000 })).status, 400);
+  const stored = values.get('limits'); stored['delete-object'].start -= 61_000; values.set('limits', stored);
+  assert.equal((await limit({ name: 'delete-object', max: 3, windowMs: 60_000 })).status, 200);
   console.log('Worker Durable Object 8 saniye/25 istek kota kontrolleri geçti.');
 }
 

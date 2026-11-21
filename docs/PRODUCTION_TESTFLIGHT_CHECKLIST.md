@@ -52,7 +52,9 @@
 
 ### Cloudflare / Worker / R2
 
-1. `FIREBASE_SERVICE_ACCOUNT`, `FIREBASE_WEB_API_KEY`, `OPENAI_API_KEY`, `REVENUECAT_SECRET_KEY` ve Apple hesap silme secretlarını Worker'a ekle.
+1. Secretları Worker'a ekle (`npx wrangler secret put <AD>`): `FIREBASE_SERVICE_ACCOUNT`, `OPENAI_API_KEY`, `REVENUECAT_SECRET_KEY`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_CLIENT_ID`, `APPLE_PRIVATE_KEY`.
+   - `FIREBASE_WEB_API_KEY` **secret değildir**: Firebase web API key'i public tasarımlıdır ve `wrangler.toml` `[vars]` içinde değişken olarak tutulur. Ancak Google Cloud Console > APIs & Services > Credentials altında bu anahtara **API kısıtlaması** koy: yalnızca **Identity Toolkit API** (ve gerekiyorsa Token Service API). Mümkünse istemci anahtarından ayrı bir anahtar kullan.
+   - `FIREBASE_PROJECT_NUMBER` (App Check doğrulaması için) ve `APP_CHECK_ENFORCE` değişkenlerini [APP_CHECK_SETUP.md](APP_CHECK_SETUP.md) uyarınca ayarla.
 2. `wrangler.toml` içindeki production origin, Firebase proje kimliği, R2 binding ve Durable Object migration'larını doğrula; sonra Worker'ı yayımla.
 3. R2 ve Workers planını kontrol et. Hesap genelindeki diğer kullanımlar uygulamanın dahili sayaçlarına dahil değildir.
 
@@ -62,9 +64,21 @@
 2. Project hard limitini 5 USD/ayarla eşleştir; uygulamadaki sayaç gecikmeli sağlayıcı faturalandırmasının yerine geçmez. Başka anahtarların harcaması bu uygulama tarafından sınırlanmaz.
 3. Kullanıcı arttığında Pro satışı açmadan kapasite ve birim maliyeti yeniden hesapla.
 
+### EAS ortam değişkenleri (EXPO_PUBLIC_*)
+
+`.env` / `.env.local` dosyaları `.gitignore` içindedir; EAS bulut build'i bu dosyaları **görmez**. Production build için değerleri EAS'a yükle:
+
+```sh
+eas env:create --environment production --name EXPO_PUBLIC_WORKER_URL --value https://... --visibility plaintext
+# tüm EXPO_PUBLIC_* değişkenleri için tekrarla (bkz. README ortam değişkenleri tablosu)
+eas env:list --environment production
+```
+
+`eas.json` içindeki build profilleri `environment` alanıyla (`development` / `preview` / `production`) ilgili EAS ortamını okur. `EXPO_PUBLIC_*` değerleri pakete gömülür; secret koyma. `npm run check:release` production build sırasında eksik değerleri reddeder.
+
 ### Gizlilik Politikası ve Kullanım Koşulları
 
-1. Gerçek işletmeci/kişi adını, destek e-postasını (`cigdemgokdas01@gmail.com`), veri saklama sürelerini ve başvuru yöntemini ekle.
+1. Gerçek işletmeci/kişi adını, destek e-postasını (`support@negiysem.app`), veri saklama sürelerini ve başvuru yöntemini ekle.
 2. Firebase/Auth, Firestore, Cloudflare R2, RevenueCat, Apple satın alma ve isteğe bağlı OpenAI veri akışını açıkla.
 3. HTTPS URL'lerini `EXPO_PUBLIC_PRIVACY_URL` ve `EXPO_PUBLIC_TERMS_URL` olarak EAS ortamına ekle; App Store Connect metadata'sında da kullan.
 

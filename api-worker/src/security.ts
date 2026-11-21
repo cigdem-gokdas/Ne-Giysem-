@@ -48,3 +48,56 @@ export function validStorageKey(key: unknown, uid?: string): key is string {
   return typeof key === 'string' && /^(wardrobe|gallery|avatars)\/[A-Za-z0-9_-]{1,128}\/[0-9a-f-]{36}\.(jpg|png|webp|heic|heif)$/.test(key)
     && (!uid || key.split('/')[1] === uid);
 }
+
+// Zero-width, bidi-control and BOM characters can hide or reorder text.
+const INVISIBLE = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
+const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+/** Single-line text that may reach a model prompt or be stored: no control / invisible chars, collapsed whitespace. */
+export function cleanText(value: string): string {
+  return value.replace(INVISIBLE, '').replace(CONTROL, '').replace(/\s+/g, ' ').trim();
+}
+/** Free text (e.g. a chat message): strips control and invisible characters but keeps line breaks. */
+export function cleanMessage(value: string): string {
+  return value.replace(INVISIBLE, '').replace(CONTROL, '').trim();
+}
+
+export const MIME_EXTENSION: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif' };
+const EXTENSION_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' };
+
+/** The stored extension always comes from the validated MIME type. A recognised filename extension that disagrees is rejected. */
+export function extensionFor(fileName: string, mimeType: string): string {
+  const extension = MIME_EXTENSION[mimeType];
+  if (!extension) throw new HttpError(415, 'Fotoğraf biçimi desteklenmiyor. JPEG, PNG, WebP veya HEIC seç.');
+  const fromName = fileName.match(/\.([a-zA-Z0-9]{2,5})$/)?.[1]?.toLowerCase();
+  const claimed = fromName ? EXTENSION_MIME[fromName] : undefined;
+  const heif = (value: string) => value === 'image/heic' || value === 'image/heif';
+  if (claimed && claimed !== mimeType && !(heif(claimed) && heif(mimeType))) throw new HttpError(415, 'Dosya uzantısı fotoğraf biçimiyle eşleşmiyor.');
+  return extension;
+}
+
+/** Removes APP1 (EXIF / XMP) segments from a JPEG by walking the marker segments. No dependencies. */
+export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
+  const bad = () => new HttpError(415, 'JPEG dosyası okunamadı veya bozuk.');
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw bad();
+  const parts: Uint8Array[] = [bytes.subarray(0, 2)];
+  let offset = 2;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) throw bad();
+    while (bytes[offset] === 0xff && offset < bytes.length) offset++; // fill bytes
+    const marker = bytes[offset++];
+    if (marker === undefined) throw bad();
+    if (marker === 0xd9) { parts.push(Uint8Array.of(0xff, 0xd9)); offset = bytes.length; break; }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { parts.push(Uint8Array.of(0xff, marker)); continue; }
+    if (offset + 2 > bytes.length) throw bad();
+    const length = (bytes[offset] << 8) | bytes[offset + 1];
+    if (length < 2 || offset + length > bytes.length) throw bad();
+    if (marker === 0xda) { parts.push(bytes.subarray(offset - 2)); offset = bytes.length; break; } // entropy-coded data follows verbatim
+    if (marker !== 0xe1) parts.push(bytes.subarray(offset - 2, offset + length));
+    offset += length;
+  }
+  const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let position = 0;
+  for (const part of parts) { result.set(part, position); position += part.length; }
+  return result;
+}

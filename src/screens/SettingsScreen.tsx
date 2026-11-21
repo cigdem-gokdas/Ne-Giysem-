@@ -17,7 +17,7 @@ import type { RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 import { useSubscription } from '../billing/SubscriptionContext';
 import { withPurchases } from '../billing/purchases';
-import { friendlyError, reportError, track } from '../services/telemetry';
+import { describeError, friendlyError, reportError, track } from '../services/telemetry';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
 
@@ -29,6 +29,7 @@ export function SettingsScreen() {
   const [subscriptionBusy, setSubscriptionBusy] = useState(false);
   const [aiAllowed, setAiAllowed] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiUnknown, setAiUnknown] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [share, setShare] = useState<ShareSettings | null>(null);
   const [busyShare, setBusyShare] = useState<'gallery' | 'boards' | null>(null);
@@ -49,7 +50,8 @@ export function SettingsScreen() {
 
   useEffect(() => {
     let active = true;
-    void getAiConsent(userId).then((value) => { if (active) setAiAllowed(value); }).catch(() => undefined);
+    // A failed read must not look like "consent off": flag it and disable the switch instead.
+    void getAiConsent(userId).then((value) => { if (active) { setAiAllowed(value); setAiUnknown(false); } }).catch((error: unknown) => { reportError('ai_consent_read', error); if (active) setAiUnknown(true); });
     getShareSettings(userId).then((settings) => {
       if (active) setShare(settings);
     }).catch(() => { if (active) Alert.alert('Ayarlar açılamadı', 'Paylaşım tercihleri yüklenemedi.'); });
@@ -62,8 +64,9 @@ export function SettingsScreen() {
     try {
       await setShareSetting(userId, kind, value);
       setShare((current) => current ? { ...current, [kind]: value } : current);
-    } catch {
-      Alert.alert('Paylaşım güncellenemedi', 'Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('share_setting', error);
+      Alert.alert('Paylaşım güncellenemedi', describeError(error, 'Lütfen tekrar dene.'));
     } finally { setBusyShare(null); }
   }
 
@@ -100,8 +103,9 @@ export function SettingsScreen() {
       Alert.alert('Tamamlandı', 'Gardırobun, sohbetlerin ve galerindeki fotoğraflar temizlendi.', [
         { text: 'Tamam', onPress: () => navigation.goBack() },
       ]);
-    } catch {
-      Alert.alert('Sıfırlanamadı', 'Bulut verileri temizlenemedi. Lütfen tekrar dene.');
+    } catch (error) {
+      reportError('reset_data', error);
+      Alert.alert('Sıfırlanamadı', describeError(error, 'Bulut verileri temizlenemedi. Lütfen tekrar dene.'));
     } finally {
       setIsResetting(false);
     }
@@ -183,7 +187,7 @@ export function SettingsScreen() {
   }
 
   return (
-    <ScreenFrame>
+    <ScreenFrame includeBottom>
       <Pressable style={styles.backButton} onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Gardıroba dön">
         <Feather name="arrow-left" size={17} color={colors.sage} />
         <Text style={styles.backText}>Gardıroba dön</Text>
@@ -245,15 +249,16 @@ export function SettingsScreen() {
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Gizlilik ve AI izni</Text>
           <Text style={styles.description}>AI kullanırken fotoğrafın veya kombin isteğin ve gardırop etiketlerin OpenAI ile paylaşılır. İzni kapattığında yeni AI isteği gönderilmez.</Text>
-          <View style={styles.toggleRow}><Text style={styles.toggleTitle}>OpenAI ile veri paylaşımı</Text><Switch value={aiAllowed} disabled={aiBusy} onValueChange={(value) => { setAiBusy(true); void setAiConsent(userId, value).then(() => setAiAllowed(value)).catch(() => Alert.alert('İzin güncellenemedi', 'Tekrar dene.')).finally(() => setAiBusy(false)); }} /></View>
+          <View style={styles.toggleRow}><Text style={styles.toggleTitle}>OpenAI ile veri paylaşımı</Text><Switch value={aiAllowed} disabled={aiBusy || aiUnknown} accessibilityLabel="OpenAI ile veri paylaşımı" onValueChange={(value) => { setAiBusy(true); void setAiConsent(userId, value).then(() => setAiAllowed(value)).catch((error: unknown) => { reportError('ai_consent_write', error); Alert.alert('İzin güncellenemedi', describeError(error, 'Lütfen tekrar dene.')); }).finally(() => setAiBusy(false)); }} /></View>
+          {aiUnknown && <Text style={styles.description} accessibilityRole="alert">İzin durumun şu an okunamadı. Bağlantını kontrol edip bu ekranı yeniden aç.</Text>}
           <LegalLinks />
         </View>
         <View style={styles.modelCard}>
           <View style={styles.modelIcon}><Feather name="star" size={19} color={colors.sage} /></View>
           <View style={styles.cardText}>
-            <Text style={styles.overline}>KULLANILAN MODEL</Text>
-            <Text style={styles.modelName}>gpt-6-luna</Text>
-            <Text style={styles.description}>Görsel etiketleme ve kombin önerileri</Text>
+            <Text style={styles.overline}>YAPAY ZEKÂ</Text>
+            <Text style={styles.modelName}>Yapay zekâ desteği</Text>
+            <Text style={styles.description}>Görsel etiketleme ve kombin önerileri yapay zekâ ile hazırlanır.</Text>
           </View>
         </View>
         <View style={styles.dangerCard}>
@@ -267,23 +272,23 @@ export function SettingsScreen() {
         </View>
       </ScrollView>
       <Modal visible={passwordModal} transparent animationType="fade" onRequestClose={() => { if (!changingPassword) setPasswordModal(false); }}>
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable style={styles.modalBackdrop} onPress={() => { if (!changingPassword) setPasswordModal(false); }} />
           <View style={styles.modalCard}>
             <Text style={styles.overline}>HESAP GÜVENLİĞİ</Text>
             <Text style={styles.modalTitle}>Şifremi değiştir</Text>
             <Text style={styles.modalHint}>Mevcut şifreni doğrula ve en az 12 karakterli yeni şifreni seç.</Text>
             <Text style={styles.modalLabel}>MEVCUT ŞİFRE</Text>
-            <TextInput style={styles.passwordInput} value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry placeholder="Mevcut şifren" placeholderTextColor={colors.textFaint} />
+            <TextInput style={styles.passwordInput} value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry placeholder="Mevcut şifren" placeholderTextColor={colors.textFaint} accessibilityLabel="Mevcut şifre" />
             <Text style={styles.modalLabel}>YENİ ŞİFRE</Text>
-            <TextInput style={styles.passwordInput} value={newPassword} onChangeText={setNewPassword} secureTextEntry placeholder="En az 12 karakter" placeholderTextColor={colors.textFaint} />
+            <TextInput style={styles.passwordInput} value={newPassword} onChangeText={setNewPassword} secureTextEntry placeholder="En az 12 karakter" placeholderTextColor={colors.textFaint} accessibilityLabel="Yeni şifre" />
             <Text style={styles.modalLabel}>YENİ ŞİFRE TEKRARI</Text>
-            <TextInput style={styles.passwordInput} value={repeatPassword} onChangeText={setRepeatPassword} secureTextEntry placeholder="Yeni şifreni tekrar yaz" placeholderTextColor={colors.textFaint} />
+            <TextInput style={styles.passwordInput} value={repeatPassword} onChangeText={setRepeatPassword} secureTextEntry placeholder="Yeni şifreni tekrar yaz" placeholderTextColor={colors.textFaint} accessibilityLabel="Yeni şifre tekrarı" />
             {!!passwordError && <Text style={styles.passwordError} accessibilityRole="alert">{passwordError}</Text>}
             <Pressable style={[styles.modalSave, changingPassword && styles.disabled]} onPress={() => { void submitPasswordChange(); }} disabled={changingPassword} accessibilityRole="button">
               {changingPassword ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.modalSaveText}>Şifreyi Güncelle</Text>}
             </Pressable>
-            <Pressable style={styles.modalCancel} onPress={() => setPasswordModal(false)} disabled={changingPassword}><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
+            <Pressable style={styles.modalCancel} onPress={() => setPasswordModal(false)} disabled={changingPassword} accessibilityRole="button" accessibilityLabel="Vazgeç"><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -291,10 +296,10 @@ export function SettingsScreen() {
         <View style={styles.modalOverlay}>
           <Pressable style={styles.modalBackdrop} onPress={() => setReportsVisible(false)} />
           <View style={styles.reportsCard}>
-            <View style={styles.reportsHeader}><View><Text style={styles.overline}>YALNIZCA ADMİN</Text><Text style={styles.modalTitle}>Moderatör Paneli</Text></View><Pressable style={styles.reportClose} onPress={() => setReportsVisible(false)}><Feather name="x" size={18} color={colors.sage} /></Pressable></View>
+            <View style={styles.reportsHeader}><View><Text style={styles.overline}>YALNIZCA ADMİN</Text><Text style={styles.modalTitle}>Moderatör Paneli</Text></View><Pressable style={styles.reportClose} onPress={() => setReportsVisible(false)} accessibilityRole="button" accessibilityLabel="Paneli kapat"><Feather name="x" size={18} color={colors.sage} /></Pressable></View>
             {reportsLoading ? <ActivityIndicator style={styles.reportsLoader} color={colors.sage} /> : <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={reports.length === 0 ? styles.emptyReports : undefined}>
               {reports.length === 0 ? <><Feather name="shield" size={29} color={colors.lavender} /><Text style={styles.emptyReportsTitle}>Bekleyen şikayet yok</Text></> : reports.map((report) => <View key={report.id} style={styles.reportRow}>
-                <Text style={styles.reportUsers}>{report.reporterUsername} → {report.reportedUsername}</Text>
+                <Text style={styles.reportUsers}>{report.reporterUsername} → {report.reportedUsername} · {report.targetType === 'post' ? 'paylaşım' : report.targetType === 'comment' ? 'yorum' : 'kullanıcı'}</Text>
                 <Text style={styles.reportReason}>{report.reason}</Text>
                 <Text style={styles.reportDate}>{new Date(report.createdAt).toLocaleString('tr-TR')}</Text>
               </View>)}
@@ -303,20 +308,20 @@ export function SettingsScreen() {
         </View>
       </Modal>
       <Modal visible={deleteModal} transparent animationType="fade" onRequestClose={() => { if (!deletingAccount) setDeleteModal(false); }}>
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable style={styles.modalBackdrop} onPress={() => { if (!deletingAccount) setDeleteModal(false); }} />
           <View style={[styles.modalCard, styles.deleteModalCard]}>
             <Text style={styles.overline}>GERİ ALINAMAZ İŞLEM</Text>
             <Text style={styles.modalTitle}>Hesabını sil</Text>
             <Text style={styles.modalHint}>Gardırobun, sohbetlerin, günlük fotoğrafların, ilham panoların ve etkileşimlerin kalıcı olarak silinir.</Text>
-            {user?.authProvider === 'local' && <><Text style={styles.modalLabel}>MEVCUT ŞİFREN</Text><TextInput style={styles.passwordInput} value={deletePassword} onChangeText={setDeletePassword} secureTextEntry placeholder="Şifreni yaz" placeholderTextColor={colors.textFaint} autoCapitalize="none" /></>}
+            {user?.authProvider === 'local' && <><Text style={styles.modalLabel}>MEVCUT ŞİFREN</Text><TextInput style={styles.passwordInput} value={deletePassword} onChangeText={setDeletePassword} secureTextEntry placeholder="Şifreni yaz" placeholderTextColor={colors.textFaint} autoCapitalize="none" accessibilityLabel="Mevcut şifren" /></>}
             <Text style={styles.modalLabel}>ONAYLAMAK İÇİN “SİL” YAZ</Text>
-            <TextInput style={styles.passwordInput} value={deleteConfirmation} onChangeText={setDeleteConfirmation} placeholder="SİL" placeholderTextColor={colors.textFaint} autoCapitalize="characters" autoCorrect={false} />
+            <TextInput style={styles.passwordInput} value={deleteConfirmation} onChangeText={setDeleteConfirmation} placeholder="SİL" placeholderTextColor={colors.textFaint} autoCapitalize="characters" autoCorrect={false} accessibilityLabel="Silme onayı" />
             {!!deleteError && <Text style={styles.passwordError} accessibilityRole="alert">{deleteError}</Text>}
             <Pressable style={[styles.finalDeleteButton, deletingAccount && styles.disabled]} onPress={confirmAccountDeletion} disabled={deletingAccount} accessibilityRole="button" accessibilityLabel="Hesabı silme işlemini onayla">
               {deletingAccount ? <ActivityIndicator color={colors.pink} /> : <><Feather name="user-x" size={17} color={colors.pink} /><Text style={styles.finalDeleteText}>Hesabı Kalıcı Olarak Sil</Text></>}
             </Pressable>
-            <Pressable style={styles.modalCancel} onPress={() => setDeleteModal(false)} disabled={deletingAccount}><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
+            <Pressable style={styles.modalCancel} onPress={() => setDeleteModal(false)} disabled={deletingAccount} accessibilityRole="button" accessibilityLabel="Vazgeç"><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
           </View>
         </KeyboardAvoidingView>
       </Modal>
