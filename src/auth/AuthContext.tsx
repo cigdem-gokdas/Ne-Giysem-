@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createUserWithEmailAndPassword, type UserCredential, GoogleAuthProvider, onIdTokenChanged, reload, sendEmailVerification, signInWithCredential, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { firebaseAuth, firestore } from '../config/firebase';
+import { APPLE_SIGNIN_ENABLED } from '../config/env';
 import { deleteUserAccount } from '../data/account';
 import { ensureRegistrationAvailable, resolveLoginEmail, type GoogleProfile, type LocalUser } from '../data/auth';
 import { appleCredential } from './apple';
@@ -146,6 +147,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }), [run]);
   const loginWithApple = useCallback((acceptedTerms: boolean) => run(async () => {
     if (!acceptedTerms) throw new Error('Kullanım koşullarını ve gizlilik metnini onaylamalısın.');
+    if (!APPLE_SIGNIN_ENABLED) throw new Error('Apple ile giriş şu anda kullanılamıyor.');
     const apple = await appleCredential();
     const result = await signInWithCredential(firebaseAuth, apple.credential);
     if (!result.user.emailVerified) throw new Error('Apple e-posta adresini doğrulayamadı.');

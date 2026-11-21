@@ -4,6 +4,13 @@ import type { PurchasesPackage } from 'react-native-purchases';
 import { firebaseAuth } from '../config/firebase';
 import { REVENUECAT_ANDROID_KEY, REVENUECAT_IOS_KEY, REVENUECAT_MONTHLY_PRODUCT_ID, REVENUECAT_YEARLY_PRODUCT_ID } from '../config/env';
 
+/** True when a store key for this platform is configured. Lets screens skip purchase calls cleanly while billing is not set up. */
+export function purchasesConfigured(): boolean {
+  if (Constants.appOwnership === 'expo' || !['ios', 'android'].includes(Platform.OS)) return false;
+  const apiKey = Platform.OS === 'ios' ? REVENUECAT_IOS_KEY : REVENUECAT_ANDROID_KEY;
+  return !!apiKey && (Platform.OS === 'ios' ? /^appl_/ : /^goog_/).test(apiKey);
+}
+
 let queue: Promise<unknown> = Promise.resolve();
 export function withPurchases<T>(uid: string, operation: (sdk: typeof import('react-native-purchases').default) => Promise<T>): Promise<T> {
   const task = queue.catch(() => undefined).then(async () => {

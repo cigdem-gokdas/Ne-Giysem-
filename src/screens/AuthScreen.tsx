@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
-import { GOOGLE_ANDROID_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, GOOGLE_WEB_CLIENT_ID } from '../config/env';
+import { APPLE_SIGNIN_ENABLED, GOOGLE_ANDROID_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, GOOGLE_WEB_CLIENT_ID } from '../config/env';
 import { ensureRegistrationAvailable, type GoogleProfile } from '../data/auth';
 import type { AuthStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
@@ -103,7 +103,7 @@ export function AuthScreen({ navigation }: Props) {
 
   useEffect(() => {
     let active = true;
-    if (Platform.OS !== 'ios' || !hasAppleNativeButton()) return () => { active = false; };
+    if (!APPLE_SIGNIN_ENABLED || Platform.OS !== 'ios' || !hasAppleNativeButton()) return () => { active = false; };
     void AppleAuthentication.isAvailableAsync()
       .then((available) => { if (active) setAppleAvailable(available); })
       .catch(() => { if (active) setAppleAvailable(false); });

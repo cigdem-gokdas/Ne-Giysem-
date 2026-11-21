@@ -153,7 +153,8 @@ Yerelde `.env.local`; EAS bulut build'inde EAS environment (aşağıya bakın).
 | `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` | İstemci | Google girişi için | yok | Google Cloud OAuth |
 | `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` | İstemci | Google girişi için | yok | Google Cloud OAuth |
 | `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` | İstemci | Google girişi için | yok | Google Cloud OAuth |
-| `EXPO_PUBLIC_REVENUECAT_IOS_KEY` | İstemci | Pro / release için | yok | RevenueCat public SDK key (`appl_...`) |
+| `EXPO_PUBLIC_APPLE_SIGNIN_ENABLED` | İstemci | Hayır | `false` | `true` yapılana kadar "Apple ile giriş" düğmesi gizlenir. Apple Developer hesabı ve Sign in with Apple yeteneği hazır olunca aç |
+| `EXPO_PUBLIC_REVENUECAT_IOS_KEY` | İstemci | Pro / release için | yok | RevenueCat public SDK key (`appl_...`). Boşsa uygulama çökmez; abonelik ekranı "henüz satışa açılmadı" der |
 | `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY` | İstemci | Android Pro için | yok | RevenueCat public SDK key (`goog_...`) |
 | `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` | İstemci | Hayır | `ne_giysem_pro_monthly` | App Store Connect |
 | `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` | İstemci | Hayır | `ne_giysem_pro_yearly` | App Store Connect |

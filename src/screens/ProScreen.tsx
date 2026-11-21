@@ -4,7 +4,7 @@ import type { PurchasesPackage } from 'react-native-purchases';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useUserId } from '../auth/AuthContext';
 import { useSubscription } from '../billing/SubscriptionContext';
-import { getPackages, withPurchases } from '../billing/purchases';
+import { getPackages, purchasesConfigured, withPurchases } from '../billing/purchases';
 import { LegalLinks } from '../components/LegalLinks';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenFrame } from '../components/ScreenFrame';
@@ -22,6 +22,7 @@ export function ProScreen({ navigation }: NativeStackScreenProps<RootStackParamL
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => { let active = true; track('paywall_viewed'); setLoading(true); setError(''); void (async () => { try {
+    if (!purchasesConfigured()) throw new Error('Abonelikler henüz satışa açılmadı. Ücretsiz gardırobunu kullanmaya devam edebilirsin.');
     const plan = await refresh(true);
     if (!plan?.billingReady) throw new Error('Abonelikler henüz satışa açılmadı. Ücretsiz gardırobunu kullanmaya devam edebilirsin.');
     const result = await getPackages(uid); if (active) { setPackages(result); if (!result.length) setError('Abonelik seçenekleri şu an yüklenemedi.'); }
