@@ -16,7 +16,7 @@ type AuthContextValue = {
   register: (username: string, email: string, password: string, acceptedTerms: boolean) => Promise<void>;
   confirmEmailVerification: () => Promise<void>; resendVerification: () => Promise<void>;
   loginWithGoogle: (profile: GoogleProfile, acceptedTerms: boolean) => Promise<void>; loginWithApple: (acceptedTerms: boolean) => Promise<void>;
-  logout: () => Promise<void>; deleteAccount: (currentPassword?: string) => Promise<void>;
+  logout: () => Promise<void>; deleteAccount: (currentPassword?: string, googleIdToken?: string) => Promise<void>;
 };
 const AuthContext = createContext<AuthContextValue | null>(null);
 function provider(user: User): LocalUser['authProvider'] {
@@ -155,7 +155,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     await saveTerms(result.user.uid); setUser(await ensureProfile(result.user)); setVerificationEmail(null);
   }), [run]);
   const logout = useCallback(async () => { await signOut(firebaseAuth); setUser(null); setVerificationEmail(null); }, []);
-  const deleteAccount = useCallback(async (password?: string) => { if (!user) throw new Error('Oturum bulunamadı.'); await deleteUserAccount(user.id, password); setUser(null); setVerificationEmail(null); }, [user]);
+  const deleteAccount = useCallback(async (password?: string, googleIdToken?: string) => { if (!user) throw new Error('Oturum bulunamadı.'); await deleteUserAccount(user.id, password, googleIdToken); setUser(null); setVerificationEmail(null); }, [user]);
   const value = useMemo(() => ({ user, initializing, initError, verificationEmail, retryInit: () => setRetryKey((v) => v + 1), login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount }), [user, initializing, initError, verificationEmail, login, register, confirmEmailVerification, resendVerification, loginWithGoogle, loginWithApple, logout, deleteAccount]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

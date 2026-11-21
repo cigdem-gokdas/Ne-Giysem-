@@ -1,6 +1,7 @@
 OPENAI_API_KEY=replace-with-openai-secret
 # Dedicated service account: project ID must equal FIREBASE_PROJECT_ID.
 # JSON value goes into a Cloudflare secret, never EXPO_PUBLIC_*.
+FIREBASE_WEB_API_KEY=
 FIREBASE_SERVICE_ACCOUNT=
 # Required to revoke Sign in with Apple consent during deletion.
 APPLE_TEAM_ID=

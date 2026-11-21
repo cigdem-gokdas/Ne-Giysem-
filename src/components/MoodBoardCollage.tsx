@@ -17,22 +17,26 @@ function kindOf(item: ClothingItem): PieceKind {
 
 function tiltFor(id: string, slot: number): Tilt {
   const seed = Array.from(id).reduce((sum, char) => sum + char.charCodeAt(0), slot * 7);
-  const angles = [-3, -2, 1, 2, 3] as const;
+  const angles = [-2, -1, 1, 2] as const;
   return `${angles[seed % angles.length]}deg`;
 }
 
-function Polaroid({ item, slot, style }: { item: ClothingItem; slot: number; style?: StyleProp<ViewStyle> }) {
+function Polaroid({ item, slot, style, aspect }: { item: ClothingItem; slot: number; style?: StyleProp<ViewStyle>; aspect?: number }) {
   return (
     <View
-      style={[styles.polaroid, style, { transform: [{ rotate: tiltFor(item.id, slot) }] }]}
+      style={[styles.polaroid, aspect ? { aspectRatio: aspect } : null, style, { transform: [{ rotate: tiltFor(item.id, slot) }] }]}
       accessible
       accessibilityLabel={`${item.tags.tur} fotoğrafı`}
     >
+      {/* contain keeps the whole garment visible; the photo background equals the card paper so no bars show. */}
       <Image source={{ uri: item.imageUri }} style={styles.photo} resizeMode="contain" />
       <Text numberOfLines={1} style={styles.photoCaption}>{item.tags.tur}</Text>
     </View>
   );
 }
+
+// Card shape (width / height) per piece, so every garment gets a frame that suits it.
+const ASPECT: Record<PieceKind, number> = { top: 0.82, outer: 0.82, bottom: 0.78, shoes: 1.2, accessory: 1.05, unknown: 0.8 };
 
 export function MoodBoardCollage({ items }: { items: ClothingItem[] }) {
   const top = items.find((item) => kindOf(item) === 'top') ?? items.find((item) => kindOf(item) === 'outer');
@@ -54,17 +58,20 @@ export function MoodBoardCollage({ items }: { items: ClothingItem[] }) {
 
   const placedIds = new Set([top.id, bottom.id, outer?.id, shoes?.id, ...accessories.map((item) => item.id)]);
   const remaining = items.filter((item) => !placedIds.has(item.id));
+  // Two balanced columns, no overlap: captions and garment tops are never covered.
+  const left = [top, bottom, accessories[0]].filter((item): item is ClothingItem => !!item);
+  const right = [outer, shoes, accessories[1]].filter((item): item is ClothingItem => !!item);
   return (
     <>
       <View style={styles.board} accessibilityLabel="Kombin stil panosu">
         <View style={styles.boardCornerTop} />
         <View style={styles.boardCornerBottom} />
-        <Polaroid item={bottom} slot={1} style={[styles.boardCard, styles.bottomCard]} />
-        {outer && <Polaroid item={outer} slot={2} style={[styles.boardCard, styles.outerCard]} />}
-        <Polaroid item={top} slot={0} style={[styles.boardCard, styles.topCard]} />
-        {shoes && <Polaroid item={shoes} slot={3} style={[styles.boardCard, styles.shoesCard]} />}
-        {accessories[0] && <Polaroid item={accessories[0]} slot={4} style={[styles.boardCard, styles.accessoryLeft]} />}
-        {accessories[1] && <Polaroid item={accessories[1]} slot={5} style={[styles.boardCard, styles.accessoryRight]} />}
+        <View style={styles.column}>
+          {left.map((item, index) => <Polaroid key={item.id} item={item} slot={index} aspect={ASPECT[kindOf(item)]} />)}
+        </View>
+        <View style={[styles.column, styles.columnCentered]}>
+          {right.map((item, index) => <Polaroid key={item.id} item={item} slot={index + 3} aspect={ASPECT[kindOf(item)]} />)}
+        </View>
       </View>
       {remaining.length > 0 && (
         <View style={styles.fallbackGrid}>
@@ -79,19 +86,14 @@ const paper = '#F4E9DD';
 const paperEdge = '#FFF5EA';
 
 const styles = StyleSheet.create({
-  board: { width: '100%', maxWidth: 340, aspectRatio: 0.78, alignSelf: 'center', position: 'relative', borderRadius: 17, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.border, overflow: 'visible' },
-  boardCornerTop: { position: 'absolute', top: 10, left: 10, width: 23, height: 23, borderTopWidth: 1, borderLeftWidth: 1, borderColor: colors.gold, opacity: 0.65 },
-  boardCornerBottom: { position: 'absolute', bottom: 10, right: 10, width: 23, height: 23, borderBottomWidth: 1, borderRightWidth: 1, borderColor: colors.gold, opacity: 0.65 },
-  polaroid: { padding: 5, paddingBottom: 8, backgroundColor: paper, borderColor: paperEdge, borderWidth: 4, borderRadius: 9, shadowColor: '#100908', shadowOffset: { width: 1, height: 6 }, shadowOpacity: 0.38, shadowRadius: 8, elevation: 8 },
-  photo: { width: '100%', flex: 1, borderRadius: 3, backgroundColor: '#DED0C1' },
-  photoCaption: { color: colors.ink, fontFamily: fonts.serif, fontSize: 9, lineHeight: 13, textAlign: 'center', marginTop: 4 },
-  boardCard: { position: 'absolute' },
-  topCard: { top: '6%', left: '25%', width: '50%', height: '49%', zIndex: 8 },
-  outerCard: { top: '11%', left: '4%', width: '43%', height: '40%', zIndex: 7 },
-  bottomCard: { top: '43%', left: '27%', width: '47%', height: '44%', zIndex: 3 },
-  shoesCard: { top: '76%', left: '48%', width: '42%', height: '23%', zIndex: 5 },
-  accessoryLeft: { top: '34%', left: '1%', width: '31%', height: '28%', zIndex: 6 },
-  accessoryRight: { top: '45%', right: '1%', width: '30%', height: '27%', zIndex: 6 },
-  fallbackGrid: { width: '100%', maxWidth: 340, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 11, alignSelf: 'center', paddingVertical: 8 },
+  board: { width: '100%', maxWidth: 340, flexDirection: 'row', alignItems: 'stretch', gap: 12, alignSelf: 'center', position: 'relative', padding: 14, borderRadius: 17, backgroundColor: colors.backgroundRaised, borderWidth: 1, borderColor: colors.border },
+  boardCornerTop: { position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderTopWidth: 1, borderLeftWidth: 1, borderColor: colors.gold, opacity: 0.65 },
+  boardCornerBottom: { position: 'absolute', bottom: 6, right: 6, width: 18, height: 18, borderBottomWidth: 1, borderRightWidth: 1, borderColor: colors.gold, opacity: 0.65 },
+  column: { flex: 1, gap: 12 },
+  columnCentered: { justifyContent: 'center' },
+  polaroid: { padding: 6, paddingBottom: 8, backgroundColor: paper, borderColor: paperEdge, borderWidth: 2, borderRadius: 8, shadowColor: '#100908', shadowOffset: { width: 1, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 5 },
+  photo: { width: '100%', flex: 1, borderRadius: 3, backgroundColor: paper },
+  photoCaption: { color: colors.ink, fontFamily: fonts.serif, fontSize: 10, lineHeight: 14, textAlign: 'center', marginTop: 5 },
+  fallbackGrid: { width: '100%', maxWidth: 340, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12, alignSelf: 'center', paddingVertical: 8 },
   fallbackCard: { width: '45%', aspectRatio: 0.8 },
 });

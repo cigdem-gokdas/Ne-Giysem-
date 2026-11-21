@@ -5,7 +5,7 @@ import type { Env } from './index';
 const COOLDOWN_MS = 8_000;
 const DEFAULT_DAILY_LIMIT = 25;
 const LEASE_MS = 60_000;
-const FORCE_PLAN_MIN_MS = 30_000;
+const FORCE_PLAN_MIN_MS = 5_000;
 const CAPACITY_CACHE_MS = 30_000;
 const DEFAULT_UPLOAD_USER_DAILY = 10;
 const UPLOAD_USER_DAILY_BYTES = 50 * 1024 ** 2;

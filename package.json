@@ -22,6 +22,7 @@
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.3",
     "firebase": "^12.19.0",
+    "jpeg-js": "^0.4.4",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-purchases": "^10.12.2",
@@ -53,13 +54,14 @@
     "test:avatar": "node scripts/test-avatar.cjs",
     "test:outfit-rules": "node scripts/test-outfit-rules.cjs",
     "test:chat-sessions": "node scripts/test-chat-sessions.cjs",
-    "test": "npm run typecheck && npm run typecheck:worker && npm run test:analysis && npm run test:recommend && npm run test:outfit-rules && npm run test:chat-sessions && npm run test:r2 && npm run test:rate-limit && npm run test:worker-client && npm run test:avatar && npm run test:security && npm run test:pro",
+    "test": "npm run typecheck && npm run typecheck:worker && npm run test:analysis && npm run test:recommend && npm run test:outfit-rules && npm run test:chat-sessions && npm run test:r2 && npm run test:rate-limit && npm run test:worker-client && npm run test:avatar && npm run test:security && npm run test:pro && npm run test:subject-box",
     "test:cloud-build": "expo export --platform ios --output-dir /tmp/ne-giysem-cloud-check",
     "test:security": "node scripts/test-worker-security.cjs && node scripts/test-secure-storage.cjs && node scripts/test-account-deletion.cjs",
     "test:rules": "firebase emulators:exec --only firestore --project demo-ne-giysem \"node scripts/test-firestore.cjs\"",
     "check:release": "node scripts/check-release.cjs",
     "eas-build-post-install": "node scripts/eas-post-install.cjs",
-    "test:pro": "node scripts/test-pro.cjs"
+    "test:pro": "node scripts/test-pro.cjs",
+    "test:subject-box": "node scripts/test-subject-box.cjs"
   },
   "overrides": {
     "uuid": "^11.1.1",

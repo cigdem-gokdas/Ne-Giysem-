@@ -31,8 +31,14 @@ async function main() {
     assert.equal(body.mimeType, 'image/jpeg');
     return { tags: { tur: 'üst', renk: 'Kahverengi', desen: 'Düz' } };
   });
-  const tags = await analyze('user-1', 'ZmFrZQ==');
+  const { tags, subjectBox } = await analyze('user-1', 'ZmFrZQ==');
+  assert.equal(subjectBox, null);
   assert.deepEqual(JSON.parse(JSON.stringify(tags)), { tur: 'üst', renk: 'Kahverengi', desen: 'Düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false, secondaryColors: [], season: [], styleTags: [], formality: 'bilinmiyor', materialGuess: 'bilinmiyor' });
+
+  const boxed = load(async () => ({ tags: { tur: 'üst', renk: 'Mavi', desen: 'Düz', subjectBox: { x: 0.1, y: 0.2, width: 0.5, height: 0.6 } } }));
+  assert.deepEqual(JSON.parse(JSON.stringify((await boxed('user-1', 'ZmFrZQ==')).subjectBox)), { x: 0.1, y: 0.2, width: 0.5, height: 0.6 });
+  const badBox = load(async () => ({ tags: { tur: 'üst', renk: 'Mavi', desen: 'Düz', subjectBox: { x: 0.8, y: 0.2, width: 0.5, height: 0.6 } } }));
+  assert.equal((await badBox('user-1', 'ZmFrZQ==')).subjectBox, null);
 
   await assert.rejects(() => analyze('user-1', ''), /Fotoğraf verisi okunamadı/);
 

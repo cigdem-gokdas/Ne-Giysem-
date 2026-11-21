@@ -3,12 +3,13 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { LegalLinks } from '../components/LegalLinks';
 import * as Google from 'expo-auth-session/providers/google';
+import { googleAuthConfig, googleConfiguredForPlatform } from '../auth/google';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
-import { APPLE_SIGNIN_ENABLED, GOOGLE_ANDROID_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, GOOGLE_WEB_CLIENT_ID } from '../config/env';
+import { APPLE_SIGNIN_ENABLED } from '../config/env';
 import { ensureRegistrationAvailable, type GoogleProfile } from '../data/auth';
 import type { AuthStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
@@ -33,13 +34,8 @@ function GoogleOAuthButton({ onError, acceptedTerms }: { onError: (message: stri
   const termsRef = useRef(acceptedTerms); termsRef.current = acceptedTerms;
   const loginRef = useRef(loginWithGoogle); loginRef.current = loginWithGoogle;
   const errorRef = useRef(onError); errorRef.current = onError;
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    webClientId: GOOGLE_WEB_CLIENT_ID || undefined,
-    iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
-    androidClientId: GOOGLE_ANDROID_CLIENT_ID || undefined,
-    scopes: ['openid', 'profile', 'email'],
-    selectAccount: true,
-  });
+  const [request, response, promptAsync] = Google.useAuthRequest(googleAuthConfig);
+
 
   useEffect(() => {
     if (!response || response.type === 'cancel' || response.type === 'dismiss') { setBusy(false); return; }
@@ -83,11 +79,9 @@ function GoogleOAuthButton({ onError, acceptedTerms }: { onError: (message: stri
 }
 
 function GoogleSignInButton({ onError, acceptedTerms }: { onError: (message: string) => void; acceptedTerms: boolean }) {
-  const configured = Platform.select({ ios: !!GOOGLE_IOS_CLIENT_ID, android: !!GOOGLE_ANDROID_CLIENT_ID, default: !!GOOGLE_WEB_CLIENT_ID });
-  if (configured) return <GoogleOAuthButton onError={onError} acceptedTerms={acceptedTerms} />;
-  return <Pressable style={styles.googleButton} onPress={() => onError('Google girişi için bu platformun istemci kimliği henüz yapılandırılmadı.')} accessibilityRole="button" accessibilityLabel="Google ile Giriş Yap">
-    <Text style={styles.googleMark}>G</Text><Text style={styles.googleText}>Google ile Giriş Yap</Text>
-  </Pressable>;
+  // Hide the button when this platform has no client ID instead of offering a button that can only fail.
+  if (!googleConfiguredForPlatform()) return null;
+  return <GoogleOAuthButton onError={onError} acceptedTerms={acceptedTerms} />;
 }
 
 export function AuthScreen({ navigation }: Props) {
@@ -160,7 +154,7 @@ export function AuthScreen({ navigation }: Props) {
           <Pressable style={[styles.primaryButton, pending && styles.disabled]} onPress={() => { void submit(); }} disabled={pending} accessibilityRole="button" accessibilityLabel={mode === 'login' ? 'Giriş Yap' : 'Doğrulama kodu gönder'}>
             {pending ? <ActivityIndicator color={colors.ink} /> : <Text style={styles.primaryText}>{mode === 'login' ? 'Giriş Yap' : 'Kayıt Ol ve E-postayı Doğrula'}</Text>}
           </Pressable>
-          <View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>VEYA</Text><View style={styles.dividerLine} /></View>
+          {(googleConfiguredForPlatform() || appleAvailable) && <View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>VEYA</Text><View style={styles.dividerLine} /></View>}
           <GoogleSignInButton onError={setError} acceptedTerms={acceptedTerms} />
           {appleAvailable && <AppleAuthentication.AppleAuthenticationButton buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN} buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE} cornerRadius={11} style={{ height: 48, marginTop: 12 }} onPress={() => { if (pending) return; setPending(true); void loginWithApple(acceptedTerms).catch((cause) => setError(cause instanceof Error ? cause.message : 'Apple girişi tamamlanamadı.')).finally(() => setPending(false)); }} />}
         </View>

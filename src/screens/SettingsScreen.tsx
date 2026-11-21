@@ -5,9 +5,10 @@ import { Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
+import { useHeaderScroll } from '../components/useHeaderScroll';
 import { useAuth, useUserId } from '../auth/AuthContext';
 import { getShareSettings, setShareSetting, type ShareSettings } from '../data/social';
 import { getModerationReports, type ModerationReport } from '../data/interactions';
@@ -16,16 +17,28 @@ import { changePassword } from '../data/auth';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { colors, fonts } from '../theme';
 import { useSubscription } from '../billing/SubscriptionContext';
+import { firebaseAuth } from '../config/firebase';
+import { googleConfiguredForPlatform, useGoogleReauth } from '../auth/google';
 import { withPurchases } from '../billing/purchases';
 import { describeError, friendlyError, reportError, track } from '../services/telemetry';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
 
+/** Only mounted for Google accounts: the Google auth hook must not run on platforms without a client ID. */
+function GoogleDeleteButton({ disabled, onPress }: { disabled: boolean; onPress: (getIdToken: () => Promise<string>) => void }) {
+  const getIdToken = useGoogleReauth();
+  return <Pressable style={[styles.finalDeleteButton, disabled && styles.disabled]} onPress={() => onPress(getIdToken)} disabled={disabled} accessibilityRole="button" accessibilityLabel="Google ile doğrula ve hesabı sil">
+    {disabled ? <ActivityIndicator color={colors.pink} /> : <><Feather name="user-x" size={17} color={colors.pink} /><Text style={styles.finalDeleteText}>Google ile doğrula ve hesabı sil</Text></>}
+  </Pressable>;
+}
+
 export function SettingsScreen() {
   const userId = useUserId();
   const { user, logout, deleteAccount } = useAuth();
   const navigation = useNavigation<Navigation>();
-  const { status: subscription, refresh: refreshSubscription } = useSubscription();
+  const { status: subscription, refresh: refreshSubscription, error: subscriptionError, errorKind, loading: subscriptionLoading } = useSubscription();
+  const firebaseUid = firebaseAuth.currentUser?.uid ?? userId;
+  const proLabel = subscription?.pro ? (subscription.expiresAt && new Date(subscription.expiresAt).getFullYear() < 9999 ? `Pro · ${new Date(subscription.expiresAt).toLocaleDateString('tr-TR')} tarihine kadar` : 'Pro · Süresiz') : 'Ücretsiz';
   const [subscriptionBusy, setSubscriptionBusy] = useState(false);
   const [aiAllowed, setAiAllowed] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
@@ -130,12 +143,13 @@ export function SettingsScreen() {
     setDeleteModal(true);
   }
 
-  async function performAccountDeletion() {
+  async function performAccountDeletion(getIdToken?: () => Promise<string>) {
     if (deletingAccount) return;
     setDeletingAccount(true);
     setDeleteError('');
     try {
-      await deleteAccount(user?.authProvider === 'local' ? deletePassword : undefined);
+      if (getIdToken) await deleteAccount(undefined, await getIdToken());
+      else await deleteAccount(user?.authProvider === 'local' ? deletePassword : undefined);
       track('account_deleted');
     } catch (cause) {
       setDeleteError(cause instanceof Error ? cause.message : 'Hesap silinemedi. Lütfen tekrar dene.');
@@ -167,7 +181,7 @@ export function SettingsScreen() {
     void Linking.openURL(url).catch((error) => { reportError('manage_subscription', error); Alert.alert('Mağaza açılamadı', 'Abonelik ayarlarını cihazındaki mağaza uygulamasından açabilirsin.'); });
   }
 
-  function confirmAccountDeletion() {
+  function confirmAccountDeletion(getIdToken?: () => Promise<string>) {
     if (deleteConfirmation.trim().toLocaleUpperCase('tr-TR') !== 'SİL') {
       setDeleteError('Devam etmek için onay alanına SİL yazmalısın.');
       return;
@@ -181,10 +195,12 @@ export function SettingsScreen() {
       'Profilin, gardırobun, sohbetlerin, fotoğrafların ve sosyal etkileşimlerin buluttan kalıcı olarak kaldırılacak. İşlem tamamlanana kadar uygulamayı açık tut. Pro aboneliğin varsa hesabı silmek aboneliği iptal etmez; önce mağaza abonelik ayarlarından iptal edebilirsin.',
       [
         { text: 'Vazgeç', style: 'cancel' },
-        { text: 'Hesabı Sil', style: 'destructive', onPress: () => { void performAccountDeletion(); } },
+        { text: 'Hesabı Sil', style: 'destructive', onPress: () => { void performAccountDeletion(getIdToken); } },
       ],
     );
   }
+
+  const { scrollY, onScroll } = useHeaderScroll();
 
   return (
     <ScreenFrame includeBottom>
@@ -192,8 +208,8 @@ export function SettingsScreen() {
         <Feather name="arrow-left" size={17} color={colors.sage} />
         <Text style={styles.backText}>Gardıroba dön</Text>
       </Pressable>
-      <ScreenHeading eyebrow="KİŞİSEL ALAN" title="Ayarlar" subtitle="Gardırobunun küçük düzenlemeleri." />
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScreenHeading scrollY={scrollY} eyebrow="KİŞİSEL ALAN" title="Ayarlar" subtitle="Gardırobunun küçük düzenlemeleri." />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} onScroll={onScroll} scrollEventThrottle={16}>
         <PlanBanner />
         <View style={styles.sectionCard}>
           <Text style={styles.overline}>NE GİYSEM PRO</Text>
@@ -217,6 +233,13 @@ export function SettingsScreen() {
             <Text style={styles.overline}>AKTİF OTURUM</Text>
             <Text style={styles.cardTitle}>{user?.username}</Text>
             {user?.email && <Text style={styles.accountEmail}>{user.email}</Text>}
+            <Text style={styles.overline}>{"KULLANICI ID'M"}</Text>
+            <Text selectable style={styles.accountEmail}>{firebaseUid}</Text>
+            <Pressable style={styles.passwordButton} onPress={() => { void Share.share({ message: firebaseUid }).catch((error: unknown) => reportError('share_uid', error)); }} accessibilityRole="button" accessibilityLabel="Kullanıcı ID'mi paylaş"><Feather name="share" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>Paylaş</Text></Pressable>
+            <Text style={[styles.overline, { marginTop: 14 }]}>ABONELİK DURUMU</Text>
+            <Text style={styles.accountEmail}>{subscriptionError && !subscription ? 'Doğrulanamadı' : proLabel}</Text>
+            {!!subscriptionError && <Text style={styles.accountEmail} accessibilityRole="alert">{errorKind === 'auth' ? 'Oturumun doğrulanamadı, çıkış yapıp tekrar giriş yap' : 'Abonelik servisine şu an ulaşılamıyor'}</Text>}
+            <Pressable style={[styles.passwordButton, subscriptionLoading && styles.disabled]} disabled={subscriptionLoading} onPress={() => { void refreshSubscription(true); }} accessibilityRole="button" accessibilityLabel="Abonelik durumunu yenile">{subscriptionLoading ? <ActivityIndicator size="small" color={colors.sage} /> : <Feather name="refresh-cw" size={15} color={colors.sage} />}<Text style={styles.passwordButtonText}>Yenile</Text></Pressable>
             <Pressable style={[styles.passwordButton, user?.authProvider !== 'local' && styles.disabled]} onPress={openPasswordModal} disabled={user?.authProvider !== 'local'} accessibilityRole="button" accessibilityLabel="Şifremi Değiştir"><Feather name="key" size={15} color={colors.sage} /><Text style={styles.passwordButtonText}>{user?.authProvider !== 'local' ? 'Şifre giriş sağlayıcın tarafından yönetiliyor' : 'Şifremi Değiştir'}</Text></Pressable>
             <Pressable style={styles.logoutButton} onPress={() => { void handleLogout(); }} accessibilityRole="button" accessibilityLabel="Çıkış Yap"><Feather name="log-out" size={15} color={colors.lavender} /><Text style={styles.logoutText}>Çıkış Yap</Text></Pressable>
           </View>
@@ -227,14 +250,6 @@ export function SettingsScreen() {
           <Text style={styles.description}>Topluluk tarafından gönderilen kullanıcı şikayetlerini incele.</Text>
           <Pressable style={styles.moderatorButton} onPress={() => { void openReports(); }} accessibilityRole="button" accessibilityLabel="Moderatör Panelini aç"><Feather name="shield" size={16} color={colors.ink} /><Text style={styles.moderatorButtonText}>Şikayetleri Gör</Text></Pressable>
         </View>}
-        <View style={styles.themeCard}>
-          <View style={styles.cardIcon}><Feather name="moon" size={20} color={colors.lavender} /></View>
-          <View style={styles.cardText}>
-            <Text style={styles.overline}>GÖRÜNÜM</Text>
-            <Text style={styles.cardTitle}>Dark Academia</Text>
-            <Text style={styles.description}>Sıcak kahveler ve yumuşak pastel dokunuşlar.</Text>
-          </View>
-        </View>
 
         <View style={styles.sectionCard}>
           <Text style={styles.overline}>BULUT VERİLERİ</Text>
@@ -318,9 +333,9 @@ export function SettingsScreen() {
             <Text style={styles.modalLabel}>ONAYLAMAK İÇİN “SİL” YAZ</Text>
             <TextInput style={styles.passwordInput} value={deleteConfirmation} onChangeText={setDeleteConfirmation} placeholder="SİL" placeholderTextColor={colors.textFaint} autoCapitalize="characters" autoCorrect={false} accessibilityLabel="Silme onayı" />
             {!!deleteError && <Text style={styles.passwordError} accessibilityRole="alert">{deleteError}</Text>}
-            <Pressable style={[styles.finalDeleteButton, deletingAccount && styles.disabled]} onPress={confirmAccountDeletion} disabled={deletingAccount} accessibilityRole="button" accessibilityLabel="Hesabı silme işlemini onayla">
+            {user?.authProvider === 'google' && googleConfiguredForPlatform() ? <GoogleDeleteButton disabled={deletingAccount} onPress={confirmAccountDeletion} /> : <Pressable style={[styles.finalDeleteButton, deletingAccount && styles.disabled]} onPress={() => confirmAccountDeletion()} disabled={deletingAccount} accessibilityRole="button" accessibilityLabel="Hesabı silme işlemini onayla">
               {deletingAccount ? <ActivityIndicator color={colors.pink} /> : <><Feather name="user-x" size={17} color={colors.pink} /><Text style={styles.finalDeleteText}>Hesabı Kalıcı Olarak Sil</Text></>}
-            </Pressable>
+            </Pressable>}
             <Pressable style={styles.modalCancel} onPress={() => setDeleteModal(false)} disabled={deletingAccount} accessibilityRole="button" accessibilityLabel="Vazgeç"><Text style={styles.modalCancelText}>Vazgeç</Text></Pressable>
           </View>
         </KeyboardAvoidingView>

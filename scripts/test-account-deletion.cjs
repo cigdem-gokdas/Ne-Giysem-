@@ -9,20 +9,22 @@ function load(fetch,env,onObjectsDeleted) {
 }
 async function b1(){
  // B1: src/data/account.ts must reauthenticate password AND Apple when both providers are linked, and send the code.
- function run(providers){
+ function run(providers,googleToken){
   const calls=[],posts=[],module={exports:{}};
   const user={uid:'u1',email:'a@b.c',providerData:providers.map(providerId=>({providerId})),getIdTokenResult:async()=>({authTime:new Date().toISOString()})};
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/data/account.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module,exports:module.exports,Date,require:n=>({
-   'firebase/auth':{EmailAuthProvider:{credential:(e,p)=>'pw:'+p},reauthenticateWithCredential:async(_u,c)=>calls.push(c),signOut:async()=>{}},
+   'firebase/auth':{EmailAuthProvider:{credential:(e,p)=>'pw:'+p},GoogleAuthProvider:{credential:t=>'g:'+t},reauthenticateWithCredential:async(_u,c)=>calls.push(c),signOut:async()=>{}},
    '../config/firebase':{firebaseAuth:{currentUser:user}},
    '../services/workerApi':{workerPost:async(_u,path,body)=>{posts.push(body);return{done:true};}},
    '../auth/apple':{appleCredential:async()=>({credential:'apple-cred',authorizationCode:'apple-code'})},
    '../auth/authErrors':{authErrorMessage:e=>e.message},
   })[n]});
-  return module.exports.deleteUserAccount('u1','secret').then(()=>({calls,posts}));
+  return module.exports.deleteUserAccount('u1','secret',googleToken).then(()=>({calls,posts}));
  }
  let r=await run(['password','apple.com']);assert.deepEqual(r.calls,['pw:secret','apple-cred']);assert.equal(r.posts[0].appleAuthorizationCode,'apple-code');
  r=await run(['password']);assert.deepEqual(r.calls,['pw:secret']);assert.equal(r.posts[0].appleAuthorizationCode,undefined);
+ r=await run(['google.com'],'idtok');assert.deepEqual(r.calls,['g:idtok']);
+ await assert.rejects(()=>run(['google.com']),/Google ile yeniden/);
  r=await run(['apple.com']);assert.deepEqual(r.calls,['apple-cred']);assert.equal(r.posts[0].appleAuthorizationCode,'apple-code');
 }
 async function main(){

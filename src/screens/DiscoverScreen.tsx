@@ -8,6 +8,7 @@ import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platfo
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
+import { useHeaderScroll } from '../components/useHeaderScroll';
 import { SocialAvatar } from '../components/SocialAvatar';
 import { SocialPostCard } from '../components/SocialPostCard';
 import { addComment, blockUser, deleteComment, getComments, reportContent, toggleLike, type PostComment } from '../data/interactions';
@@ -185,9 +186,10 @@ export function DiscoverScreen() {
     );
   }
 
+  const { scrollY, onScroll } = useHeaderScroll();
+
   const header = (
     <>
-      <ScreenHeading eyebrow="STİL DEFTERİ" title="Keşfet" subtitle="Her gün başka bir ilham, aynı sıcak gardırop." showNotifications />
       {people.length > 0 && <View style={styles.peopleSection}>
         <View style={styles.sectionHeading}><Feather name="users" size={15} color={colors.sage} /><Text style={styles.sectionLabel}>DİĞER STİL DEFTERLERİ</Text></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.peopleRow}>
@@ -203,7 +205,11 @@ export function DiscoverScreen() {
 
   return <ScreenFrame>
     {loading ? <View style={styles.center}><ActivityIndicator color={colors.sage} /><Text style={styles.state}>Keşfet hazırlanıyor...</Text></View> : failed ? <View style={styles.center}><Text style={styles.state}>Keşfet açılamadı.</Text><Pressable style={styles.retry} accessibilityRole="button" accessibilityLabel="Tekrar dene" onPress={() => { setLoading(true); setReload((n) => n + 1); }}><Text style={styles.retryText}>Tekrar dene</Text></Pressable></View> : (
+      <>
+      <ScreenHeading eyebrow="STİL DEFTERİ" title="Keşfet" subtitle="Her gün başka bir ilham, aynı sıcak gardırop." showNotifications scrollY={scrollY} />
       <FlatList
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         data={posts}
         keyExtractor={(item) => `${item.kind}-${item.id}`}
         ListHeaderComponent={header}
@@ -232,6 +238,7 @@ export function DiscoverScreen() {
           </Pressable> : null}
         </View>}
       />
+      </>
     )}
 
     <Modal visible={commentPost !== null} transparent animationType="slide" onRequestClose={() => setCommentPost(null)}>

@@ -4,10 +4,9 @@ compatibility_date = "2026-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-ALLOWED_ORIGINS = "https://your-production-web-domain.example"
+ALLOWED_ORIGINS = "*"
 FIREBASE_PROJECT_ID = "ne-giysem-ca404"
-# Firebase web API key (not an admin credential); required for revocation checks.
-FIREBASE_WEB_API_KEY = "AIzaSyCwR2kyB_0bgRcw1dAc5VKi69ETZeZq78I"
+# FIREBASE_WEB_API_KEY is a secret (npx wrangler secret put FIREBASE_WEB_API_KEY); required for revocation checks.
 REVENUECAT_ENTITLEMENT = "pro"
 # Enable only on an isolated preview Worker for StoreKit / TestFlight sandbox tests.
 REVENUECAT_ALLOW_SANDBOX = "false"
@@ -29,7 +28,7 @@ STORAGE_MONTHLY_BYTES_LIMIT = "5368709120"
 OPENAI_MODEL = "gpt-6-luna"
 # Firebase App Check (Worker side). FIREBASE_PROJECT_NUMBER is the numeric project number (Firebase console >
 # Project settings). With APP_CHECK_ENFORCE = "false" tokens are verified when present and failures are only logged.
-FIREBASE_PROJECT_NUMBER = ""
+FIREBASE_PROJECT_NUMBER = "453039000570"
 APP_CHECK_ENFORCE = "false"
 
 [[r2_buckets]]

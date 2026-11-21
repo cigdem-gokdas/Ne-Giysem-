@@ -1,6 +1,7 @@
 import { useSubscription } from '../billing/SubscriptionContext';
 import { PlanBanner } from '../components/PlanBanner';
 import { prepareImage } from '../services/prepareImage';
+import { cropToBox, smartCropClothing } from '../services/smartCrop';
 import { Feather } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
@@ -11,7 +12,7 @@ import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { addClothingItem, CLOTHING_TYPES, FIT_TYPES, getWardrobeCapacity, SUBTYPES, type ClothingTags } from '../data/wardrobe';
 import type { RootStackParamList } from '../navigation/AppNavigator';
-import { analyzeClothing } from '../services/analyzeClothing';
+import { analyzeClothing, type SubjectBox } from '../services/analyzeClothing';
 import type { ImageUploadMetadata } from '../services/r2Storage';
 import { RateLimitError, ProRequiredError } from '../services/workerApi';
 import { colors, fonts } from '../theme';
@@ -46,14 +47,16 @@ export function AddClothingScreen({ navigation }: Props) {
     analysisController.current?.abort();
   }; }, []);
 
-  async function runAnalysis(base64Jpeg: string, pro: boolean | undefined = plan?.pro) {
-    if (!mountedRef.current || analyzingRef.current) return;
+  /** Returns the AI subject box when the analysis succeeded (null = no box); `ok` is false on failure or cancellation. */
+  async function runAnalysis(base64Jpeg: string, pro: boolean | undefined = plan?.pro): Promise<{ ok: boolean; subjectBox: SubjectBox | null }> {
+    const failed: { ok: boolean; subjectBox: SubjectBox | null } = { ok: false, subjectBox: null };
+    if (!mountedRef.current || analyzingRef.current) return failed;
     if (pro === undefined) {
       // Membership could not be verified (offline / transient error): never bounce a possible Pro user to the paywall.
       Alert.alert('Üyelik doğrulanamadı', 'Üyelik durumun şu an kontrol edilemedi. Etiketleri elle doldurabilir veya biraz sonra tekrar deneyebilirsin.');
-      return;
+      return failed;
     }
-    if (!pro) { navigation.navigate('Pro'); return; }
+    if (!pro) { navigation.navigate('Pro'); return failed; }
     analyzingRef.current = true;
     const requestId = ++analysisRequestId.current;
     analysisController.current?.abort();
@@ -65,9 +68,10 @@ export function AddClothingScreen({ navigation }: Props) {
     setIsAnalyzing(true);
     track('ai_auto_tag_started');
 
+    let outcome: { ok: boolean; subjectBox: SubjectBox | null } = failed;
     try {
       const result = await analyzeClothing(userId, base64Jpeg, controller.signal);
-      if (analysisRequestId.current === requestId) { setTags(result); track('ai_auto_tag_success'); }
+      if (analysisRequestId.current === requestId) { setTags(result.tags); track('ai_auto_tag_success'); outcome = { ok: true, subjectBox: result.subjectBox }; }
     } catch (error) {
       if (analysisRequestId.current === requestId) {
         track('ai_auto_tag_failed');
@@ -89,9 +93,10 @@ export function AddClothingScreen({ navigation }: Props) {
       }
       analyzingRef.current = false;
     }
+    return outcome;
   }
 
-  async function pickImage() {
+  async function pickImage(source: 'library' | 'camera' = 'library') {
     if (pickingRef.current || savingRef.current) return;
     pickingRef.current = true;
     setIsPicking(true);
@@ -109,30 +114,55 @@ export function AddClothingScreen({ navigation }: Props) {
         navigation.navigate('Pro');
         return;
       }
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Kamera izni gerekli', 'Kıyafet fotoğrafı çekebilmek için kamera izni vermelisin.', [
+            { text: 'Vazgeç', style: 'cancel' },
+            { text: 'Ayarları Aç', onPress: () => { void Linking.openSettings().catch(() => Alert.alert('Ayarlar açılamadı', 'Cihaz ayarlarını elle açabilirsin.')); } },
+          ]);
+          return;
+        }
+      }
       // The system photo picker does not need broad library permission for images.
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsMultipleSelection: false,
-        base64: false,
-        quality: 0.8,
-      });
+      const pickerOptions: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], allowsMultipleSelection: false, base64: false, quality: 0.8, allowsEditing: false };
+      const result = source === 'camera' ? await ImagePicker.launchCameraAsync(pickerOptions) : await ImagePicker.launchImageLibraryAsync(pickerOptions);
       if (mountedRef.current && !result.canceled && result.assets[0]?.uri) {
         analysisRequestId.current++;
         analysisController.current?.abort();
         const asset = result.assets[0];
-        // The small analysis copy is only needed for its base64; the upload re-encodes the original once.
-        const image = await prepareImage(asset.uri, 1024, true);
-        await FileSystem.deleteAsync(image.uri, { idempotent: true }).catch(() => undefined);
+        const confirmedPlan = plan ?? await refreshPlan();
         if (!mountedRef.current) return;
+        const originalMetadata: ImageUploadMetadata = { mimeType: asset.mimeType ?? 'image/jpeg', fileName: asset.fileName, fileSize: asset.fileSize };
         setImageUri(asset.uri);
-        setUploadMetadata({ mimeType: asset.mimeType ?? 'image/jpeg', fileName: asset.fileName, fileSize: asset.fileSize });
-        base64Ref.current = image.base64 ?? null;
+        setUploadMetadata(originalMetadata);
+        base64Ref.current = null;
         setTags({ tur: 'üst', renk: 'bilinmiyor', desen: 'düz', kesim: 'bilinmiyor', altTur: 'diğer', kemerUygun: false });
         setAnalysisFailed(false);
         setIsAnalyzing(false);
-        const confirmedPlan = plan ?? await refreshPlan();
-        if (mountedRef.current && confirmedPlan?.pro && image.base64) await runAnalysis(image.base64, true);
-        else if (mountedRef.current && !confirmedPlan) Alert.alert('Üyelik doğrulanamadı', 'Otomatik analiz şu an kullanılamıyor. Etiketleri elle doldurabilirsin.');
+        if (!confirmedPlan) { Alert.alert('Üyelik doğrulanamadı', 'Otomatik analiz ve kırpma şu an kullanılamıyor. Etiketleri elle doldurabilirsin.'); return; }
+        // Free: no auto-crop and no analysis (the Pro hint below the photo explains it).
+        if (!confirmedPlan.pro) return;
+
+        // Pro: analyse the ORIGINAL photo first, then crop it (AI box, else the on-device fallback). Analysis is not re-run on the crop.
+        let outcome: { ok: boolean; subjectBox: SubjectBox | null } = { ok: false, subjectBox: null };
+        try {
+          const image = await prepareImage(asset.uri, 1024, true);
+          await FileSystem.deleteAsync(image.uri, { idempotent: true }).catch(() => undefined);
+          if (!mountedRef.current) return;
+          base64Ref.current = image.base64 ?? null;
+          if (image.base64) outcome = await runAnalysis(image.base64, true);
+        } catch (error) {
+          reportError('image_prepare', error);
+        }
+        if (!mountedRef.current) return;
+        let crop = outcome.subjectBox ? await cropToBox(asset.uri, outcome.subjectBox) : null;
+        if (!crop?.cropped) crop = await smartCropClothing(asset.uri);
+        if (!mountedRef.current) return;
+        if (crop.cropped) {
+          setImageUri(crop.uri);
+          setUploadMetadata({ mimeType: 'image/jpeg', fileName: 'kiyafet.jpg' });
+        }
       }
     } catch (error) {
       if (!mountedRef.current) return;
@@ -191,23 +221,36 @@ export function AddClothingScreen({ navigation }: Props) {
           accessibilityRole="button"
           accessibilityLabel={imageUri ? 'Fotoğrafı değiştir' : 'Fotoğraf Seç'}
           disabled={isPicking || isSaving}
-          onPress={pickImage}
+          onPress={() => { void pickImage('library'); }}
           style={({ pressed }) => [styles.photoArea, imageUri && styles.photoAreaSelected, pressed && styles.pressed]}
         >
           {imageUri ? (
             <>
-              <Image source={{ uri: imageUri }} style={styles.selectedImage} resizeMode="cover" accessibilityLabel="Seçilen kıyafet fotoğrafı" />
+              <Image source={{ uri: imageUri }} style={styles.selectedImage} resizeMode="contain" accessibilityLabel="Seçilen kıyafet fotoğrafı" />
               <View style={styles.changePill}><Feather name="refresh-cw" size={13} color={colors.ink} /><Text style={styles.photoPillText}>FOTOĞRAFI DEĞİŞTİR</Text></View>
             </>
           ) : (
             <>
               <View style={styles.photoIcon}><Feather name="image" size={31} color={colors.pink} /></View>
-              <Text style={styles.photoTitle}>{isPicking ? 'Galeri açılıyor...' : 'Fotoğraf Seç'}</Text>
-              <Text style={styles.photoHint}>Gardırobuna eklemek için bir kıyafet seç</Text>
+              <Text style={styles.photoTitle}>{isPicking ? 'Fotoğraf hazırlanıyor...' : 'Fotoğraf Seç'}</Text>
+              <Text style={styles.photoHint}>{plan?.pro ? 'Pro: kıyafet fotoğrafın otomatik kadrajlanır' : 'Gardırobuna eklemek için bir kıyafet seç'}</Text>
               <View style={styles.photoPill}><Feather name="plus" size={14} color={colors.ink} /><Text style={styles.photoPillText}>FOTOĞRAF EKLE</Text></View>
             </>
           )}
         </Pressable>
+        {plan && !plan.pro && (
+          <Pressable accessibilityRole="button" accessibilityLabel="Otomatik kırpma Pro'ya özel, Pro ayrıntılarını gör" onPress={() => navigation.navigate('Pro')} style={({ pressed }) => [styles.proHint, pressed && styles.pressed]}>
+            <Feather name="star" size={12} color={colors.gold} /><Text style={styles.proHintText}>Otomatik kırpma Pro’ya özel</Text>
+          </Pressable>
+        )}
+        <View style={sourceStyles.row}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Fotoğraf çek" disabled={isPicking || isSaving} onPress={() => { void pickImage('camera'); }} style={({ pressed }) => [sourceStyles.button, pressed && sourceStyles.pressed, (isPicking || isSaving) && sourceStyles.disabled]}>
+            <Feather name="camera" size={17} color={colors.sage} /><Text style={sourceStyles.text}>Fotoğraf Çek</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Galeriden seç" disabled={isPicking || isSaving} onPress={() => { void pickImage('library'); }} style={({ pressed }) => [sourceStyles.button, pressed && sourceStyles.pressed, (isPicking || isSaving) && sourceStyles.disabled]}>
+            <Feather name="image" size={17} color={colors.sage} /><Text style={sourceStyles.text}>Galeriden Seç</Text>
+          </Pressable>
+        </View>
 
         <View style={styles.tagsHeading}>
           <Text style={styles.sectionLabel}>ETİKETLER (ÖNİZLEME)</Text>
@@ -258,8 +301,10 @@ const styles = StyleSheet.create({
   subtitle: { color: colors.textMuted, fontFamily: fonts.sans, fontSize: 13, lineHeight: 20, marginTop: 7, marginBottom: 27 },
   sectionLabel: { color: colors.text, fontFamily: fonts.sans, fontSize: 11, fontWeight: '700', letterSpacing: 1.8 },
   photoArea: { marginTop: 12, minHeight: 220, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border, alignItems: 'center', justifyContent: 'center', padding: 22 },
-  photoAreaSelected: { borderStyle: 'solid', padding: 0, overflow: 'hidden' },
-  selectedImage: { width: '100%', height: 232 },
+  photoAreaSelected: { borderStyle: 'solid', padding: 0, overflow: 'hidden', width: '100%', aspectRatio: 3 / 4, backgroundColor: colors.surfaceLight },
+  selectedImage: { width: '100%', height: '100%' },
+  proHint: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, marginTop: 6 },
+  proHintText: { color: colors.gold, fontFamily: fonts.sans, fontSize: 11, fontWeight: '700' },
   changePill: { position: 'absolute', right: 12, bottom: 12, backgroundColor: colors.sage, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 6 },
   photoIcon: { width: 62, height: 62, borderRadius: 31, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundRaised, alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
   photoTitle: { color: colors.pink, fontFamily: fonts.serif, fontSize: 22 },
@@ -277,4 +322,12 @@ const styles = StyleSheet.create({
   retryText: { color: colors.sage, fontFamily: fonts.sans, fontSize: 12, fontWeight: '700' },
   saveArea: { marginTop: 28 },
   disclaimer: { color: colors.textFaint, fontFamily: fonts.sans, fontSize: 10, textAlign: 'center', marginTop: 11 },
+});
+
+const sourceStyles = StyleSheet.create({
+  row: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  button: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 48, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  pressed: { backgroundColor: colors.backgroundRaised },
+  disabled: { opacity: 0.5 },
+  text: { color: colors.text, fontFamily: fonts.sans, fontSize: 14, fontWeight: '600' },
 });

@@ -44,7 +44,7 @@ const FIREBASE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/ser
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 const ALLOWED_FOLDERS = new Set(['wardrobe', 'gallery', 'avatars']);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const VISION_PROMPT = 'Sen bir moda asistanısın. Fotoğraftaki tek parçayı etiketle. tur, hakim renk, ikincil renkler, desen, kesim (dar/normal/bol/bilinmiyor), altTur (tişört/gömlek/kazak/pantolon/etek/ceket/kaban/ayakkabı/çanta/kemer/diğer), kemerUygun, uygun mevsimler, kısa stil etiketleri, resmiyet (günlük/smart casual/resmi/bilinmiyor) ve materialGuess alanlarını doldur. Kesim veya malzeme görselden ayırt edilemiyorsa bilinmiyor de; malzemeyi kesin gerçek gibi sunma. Çanta ve kemeri aksesuar türünde doğru altTur ile ayır. KemerUygun yalnızca belinde kemer kullanılabilecek alt giyim için doğru olsun. Sadece JSON dön.';
+const VISION_PROMPT = 'Sen bir moda asistanısın. Fotoğraftaki tek parçayı etiketle. tur, hakim renk, ikincil renkler, desen, kesim (dar/normal/bol/bilinmiyor), altTur (tişört/gömlek/kazak/pantolon/etek/ceket/kaban/ayakkabı/çanta/kemer/diğer), kemerUygun, uygun mevsimler, kısa stil etiketleri, resmiyet (günlük/smart casual/resmi/bilinmiyor) ve materialGuess alanlarını doldur. Kesim veya malzeme görselden ayırt edilemiyorsa bilinmiyor de; malzemeyi kesin gerçek gibi sunma. Çanta ve kemeri aksesuar türünde doğru altTur ile ayır. KemerUygun yalnızca belinde kemer kullanılabilecek alt giyim için doğru olsun. subjectBox alanına ana kıyafetin etrafındaki sıkı sınırlayıcı kutuyu yaz: x, y (sol üst köşe), width, height; hepsi görselin genişliğine/yüksekliğine göre 0 ile 1 arasında normalize edilmiş olsun. Kutu yalnızca ana kıyafeti kapsasın; gölge, askı, zemin ve arka planı dışarıda bırak. Emin değilsen subjectBox null olsun. Sadece JSON dön.';
 const OUTFIT_PROMPT = `Sen samimi, Türkçe konuşan, Dark Academia ve Koyu Kış (Deep Winter) estetiğinde uzman bir stil danışmanısın. Kullanıcının planına göre verilen gardırop ID'lerinden baştan aşağı uyumlu bir kombin seç. ID'ler yalnızca gerçek gardırop parçalarına ait olabilir; dışarıdan önerileri mesajda açıkça belirt.
 1. Gardıroptaki farklı parçaları kullan. Peş peşe aynı alt-üst veya ayakkabı eşleşmesini ASLA önerme. Sana gönderilen liste bu rotasyona göre filtrelenmiştir; yalnızca listedeki ID'leri seç.
 2. "son_kullanim" kaç kombin önce kullanıldığını, "hic" hiç kullanılmadığını gösterir. "kullanim_sayisi" düşük olan nadir kullanılmış parçaları önceliklendir. Uyumlu seçenekler arasında daima daha az kullanılanı seç.
@@ -213,14 +213,28 @@ function completionContent(result: OpenAIResponse): string {
   return text;
 }
 
-function parseTags(content: string): { tur: string; renk: string; desen: string; kesim: string; altTur: string; kemerUygun: boolean; secondaryColors: string[]; season: string[]; styleTags: string[]; formality: string; materialGuess: string } {
-  const value = JSON.parse(content) as { tur?: unknown; renk?: unknown; desen?: unknown; kesim?: unknown; altTur?: unknown; kemerUygun?: unknown; secondaryColors?: unknown; season?: unknown; styleTags?: unknown; formality?: unknown; materialGuess?: unknown };
+type SubjectBox = { x: number; y: number; width: number; height: number };
+/** Clamps the model's normalized box to [0,1]; null when missing or implausible. */
+function sanitizeSubjectBox(input: unknown): SubjectBox | null {
+  if (!input || typeof input !== 'object') return null;
+  const raw = input as Record<string, unknown>;
+  const nums = [raw.x, raw.y, raw.width, raw.height];
+  if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  const x = clamp(raw.x as number), y = clamp(raw.y as number);
+  const width = clamp(raw.width as number), height = clamp(raw.height as number);
+  if (width < 0.05 || height < 0.05 || x + width > 1.0001 || y + height > 1.0001) return null;
+  return { x, y, width: Math.min(width, 1 - x), height: Math.min(height, 1 - y) };
+}
+
+function parseTags(content: string): { subjectBox: SubjectBox | null; tur: string; renk: string; desen: string; kesim: string; altTur: string; kemerUygun: boolean; secondaryColors: string[]; season: string[]; styleTags: string[]; formality: string; materialGuess: string } {
+  const value = JSON.parse(content) as { tur?: unknown; renk?: unknown; desen?: unknown; kesim?: unknown; altTur?: unknown; kemerUygun?: unknown; secondaryColors?: unknown; season?: unknown; styleTags?: unknown; formality?: unknown; materialGuess?: unknown; subjectBox?: unknown };
   const strings = (input: unknown, max: number) => Array.isArray(input) && input.length <= max && input.every(item => typeof item === 'string' && item.trim().length > 0 && item.length <= 40);
   if (!value || !['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'].includes(String(value.tur)) || typeof value.renk !== 'string' || !value.renk.trim() || typeof value.desen !== 'string' || !value.desen.trim() || !['dar', 'normal', 'bol', 'bilinmiyor'].includes(String(value.kesim)) || !['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'].includes(String(value.altTur)) || typeof value.kemerUygun !== 'boolean') {
     throw new HttpError(502, 'Stil servisi geçersiz etiketler üretti.');
   }
   if (!strings(value.secondaryColors, 4) || !strings(value.season, 4) || !strings(value.styleTags, 8) || !['günlük','smart casual','resmi','bilinmiyor'].includes(String(value.formality)) || typeof value.materialGuess !== 'string' || !value.materialGuess.trim() || value.materialGuess.length > 80) throw new HttpError(502, 'Stil servisi geçersiz ek etiketler üretti.');
-  return { tur: String(value.tur), renk: value.renk.trim().slice(0, 80), desen: value.desen.trim().slice(0, 80), kesim: String(value.kesim), altTur: String(value.altTur), kemerUygun: value.kemerUygun, secondaryColors: value.secondaryColors as string[], season: value.season as string[], styleTags: value.styleTags as string[], formality: String(value.formality), materialGuess: value.materialGuess.trim() };
+  return { subjectBox: sanitizeSubjectBox(value.subjectBox), tur: String(value.tur), renk: value.renk.trim().slice(0, 80), desen: value.desen.trim().slice(0, 80), kesim: String(value.kesim), altTur: String(value.altTur), kemerUygun: value.kemerUygun, secondaryColors: value.secondaryColors as string[], season: value.season as string[], styleTags: value.styleTags as string[], formality: String(value.formality), materialGuess: value.materialGuess.trim() };
 }
 
 function parseRecommendation(content: string, wardrobe: ClothingSummary[], replacement: boolean): { mesaj: string; secilen_idler: string[] } {
@@ -379,13 +393,13 @@ async function route(request: Request, env: Env): Promise<Response> {
         model: env.OPENAI_MODEL?.trim() || DEFAULT_MODEL,
         service_tier: 'default',
         reasoning: { effort: 'none' },
-        max_output_tokens: 300,
+        max_output_tokens: 400,
         store: false,
         input: [
           { role: 'system', content: VISION_PROMPT },
           { role: 'user', content: [{ type: 'input_text', text: 'Fotoğraftaki kıyafeti analiz et.' }, { type: 'input_image', image_url: `data:${input.mimeType};base64,${input.imageBase64}`, detail: 'low' }] },
         ],
-        text: { format: { type: 'json_schema', name: 'clothing_tags', strict: true, schema: { type: 'object', properties: { tur: { type: 'string', enum: ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'] }, renk: { type: 'string' }, secondaryColors: { type: 'array', maxItems: 4, items: { type: 'string' } }, desen: { type: 'string' }, kesim: { type: 'string', enum: ['dar', 'normal', 'bol', 'bilinmiyor'] }, altTur: { type: 'string', enum: ['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'] }, kemerUygun: { type: 'boolean' }, season: { type: 'array', maxItems: 4, items: { type: 'string' } }, styleTags: { type: 'array', maxItems: 8, items: { type: 'string' } }, formality: { type: 'string', enum: ['günlük','smart casual','resmi','bilinmiyor'] }, materialGuess: { type: 'string' } }, required: ['tur', 'renk', 'secondaryColors', 'desen', 'kesim', 'altTur', 'kemerUygun', 'season', 'styleTags', 'formality', 'materialGuess'], additionalProperties: false } } },
+        text: { format: { type: 'json_schema', name: 'clothing_tags', strict: true, schema: { type: 'object', properties: { tur: { type: 'string', enum: ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'] }, renk: { type: 'string' }, secondaryColors: { type: 'array', maxItems: 4, items: { type: 'string' } }, desen: { type: 'string' }, kesim: { type: 'string', enum: ['dar', 'normal', 'bol', 'bilinmiyor'] }, altTur: { type: 'string', enum: ['tişört', 'gömlek', 'kazak', 'pantolon', 'etek', 'ceket', 'kaban', 'ayakkabı', 'çanta', 'kemer', 'diğer'] }, kemerUygun: { type: 'boolean' }, season: { type: 'array', maxItems: 4, items: { type: 'string' } }, styleTags: { type: 'array', maxItems: 8, items: { type: 'string' } }, formality: { type: 'string', enum: ['günlük','smart casual','resmi','bilinmiyor'] }, materialGuess: { type: 'string' }, subjectBox: { type: ['object', 'null'], properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } }, required: ['x', 'y', 'width', 'height'], additionalProperties: false } }, required: ['tur', 'renk', 'secondaryColors', 'desen', 'kesim', 'altTur', 'kemerUygun', 'season', 'styleTags', 'formality', 'materialGuess', 'subjectBox'], additionalProperties: false } } },
       });
       return parseTags(completionContent(result));
     });

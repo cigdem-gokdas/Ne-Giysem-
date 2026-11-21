@@ -5,13 +5,14 @@ import type { RootStackParamList } from '../navigation/AppNavigator';
 import { Feather } from '@expo/vector-icons';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MessageBubble } from '../components/MessageBubble';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
+import { useHeaderScroll } from '../components/useHeaderScroll';
 import { appendChatMessage, clearChatSessions, deleteChatSession, getChatSessions, type ChatSession } from '../data/chatSessions';
 import { createMoodBoard } from '../data/moodBoards';
 import { buildWardrobeSummary, getOutfitHistory, hasAvailableMainPiece, saveOutfitHistoryEntry, type OutfitHistoryEntry } from '../data/outfitHistory';
@@ -90,6 +91,12 @@ export function OutfitChatScreen() {
   const knownItemsRef = useRef<ClothingItem[]>([]);
   const chatMutationRef = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
+  // Follow new messages only while the user is already near the bottom; never yank them away from earlier outfits.
+  const stickToBottom = useRef(true);
+  const { scrollY, onScroll } = useHeaderScroll(useCallback((event) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    stickToBottom.current = contentSize.height - layoutMeasurement.height - contentOffset.y < 120;
+  }, []));
 
   useEffect(() => {
     mountedRef.current = true;
@@ -118,6 +125,7 @@ export function OutfitChatScreen() {
 
   function chooseSession(sessionId: string | null) {
     if (deletingChats || isSending) return;
+    stickToBottom.current = true;
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
     setMessages(messagesFromSession(sessions.find((session) => session.id === sessionId), knownItemsRef.current));
@@ -246,6 +254,7 @@ export function OutfitChatScreen() {
     if (!prompt || sendingRef.current || deletingChats || isLoadingWardrobe || loadError || wardrobe.length < 2) return;
 
     if (plan && !plan.pro && plan.freeChatsRemaining === 0) { track('free_ai_limit_reached'); rootNavigation.navigate('Pro'); return; }
+    stickToBottom.current = true;
     track('stylist_message_sent', { pro: plan?.pro === true });
     let exchange = replacement;
     if (!exchange && isReplacementRequest(prompt) && lastOutfit) {
@@ -362,7 +371,7 @@ export function OutfitChatScreen() {
   return (
     <ScreenFrame>
       <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
-        <ScreenHeading eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbet" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} onClearPress={sessions.length > 0 && !deletingChats && !isSending ? confirmClearChats : undefined} centerTitle showNotifications />
+        <ScreenHeading compact scrollY={scrollY} eyebrow="KİŞİSEL STİL DANIŞMANIN" title="Kombin sohbeti" subtitle={activeSession?.title ?? 'Bir plan anlat, gardırobundan bir hikâye çıkaralım.'} onMenuPress={() => { Keyboard.dismiss(); drawerX.setValue(-drawerWidth); setDrawerVisible(true); }} onClearPress={sessions.length > 0 && !deletingChats && !isSending ? confirmClearChats : undefined} centerTitle showNotifications />
         <PlanBanner chat />
         {isLoadingWardrobe ? (
           <View style={styles.centerState}><ActivityIndicator color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
@@ -378,7 +387,9 @@ export function OutfitChatScreen() {
             style={styles.chatScroll}
             contentContainerStyle={styles.chatContent}
             keyboardShouldPersistTaps="handled"
-            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+            scrollEventThrottle={16}
+            onScroll={onScroll}
+            onContentSizeChange={() => { if (stickToBottom.current) scrollRef.current?.scrollToEnd({ animated: false }); }}
           >
             {wardrobe.length < 2 && (
               <View style={styles.noticeCard}>

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableWithoutFeedback, useWindowDimensions, View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
+import { useHeaderScroll } from '../components/useHeaderScroll';
 import { MoodBoardCollage } from '../components/MoodBoardCollage';
 import { SocialAvatar } from '../components/SocialAvatar';
 import { useAuth, useUserId } from '../auth/AuthContext';
@@ -299,11 +300,15 @@ export function OutfitHistoryScreen() {
     sourceTimer.current = setTimeout(() => { sourceTimer.current = null; if (mounted.current) void pickPhoto(source); }, 280);
   }
 
+  const { scrollY, onScroll, resetHeader } = useHeaderScroll();
+  useEffect(() => { resetHeader(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, loading, loadError]);
+
   return (
     <ScreenFrame>
       <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
         <View style={styles.content}>
-      <ScreenHeading eyebrow="KİŞİSEL STİL DEFTERİN" title="Profilim" subtitle="Fotoğrafların, panoların ve sana ait küçük stil notları." showNotifications onSettingsPress={() => navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('Settings')} />
+      <ScreenHeading scrollY={scrollY} eyebrow="KİŞİSEL STİL DEFTERİN" title="Profilim" subtitle="Fotoğrafların, panoların ve sana ait küçük stil notları." showNotifications onSettingsPress={() => navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.navigate('Settings')} />
       <View style={styles.profileCard}>
         <Pressable style={styles.profileAvatar} onPress={() => { void chooseAvatar(); }} disabled={savingProfile} accessibilityRole="button" accessibilityLabel="Profil fotoğrafını değiştir">
           <SocialAvatar username={user?.username ?? ''} uri={avatarUri} size={64} />
@@ -342,11 +347,11 @@ export function OutfitHistoryScreen() {
       ) : activeSection === 'boards' && boards.length === 0 ? (
         <View style={styles.centerState}><View style={styles.emptyCard}><Feather name="layers" size={32} color={colors.lavender} /><Text style={styles.emptyTitle}>İlk panonu oluştur</Text><Text style={styles.stateText}>Gardırobundan birkaç parça seçip kendi kolajını biriktir.</Text></View></View>
       ) : activeSection === 'boards' ? (
-        <FlatList data={boards} keyExtractor={(board) => board.id} contentContainerStyle={styles.boardListContent} renderItem={({ item }) => <MoodBoardCard board={item} wardrobeById={wardrobeById} onDelete={() => setPendingBoardDelete(item)} />} showsVerticalScrollIndicator={false} ListHeaderComponent={<Text style={styles.collectionCount}>{boards.length} PANO  /  SENİN İLHAMIN</Text>} />
+        <FlatList onScroll={onScroll} scrollEventThrottle={16} data={boards} keyExtractor={(board) => board.id} contentContainerStyle={styles.boardListContent} renderItem={({ item }) => <MoodBoardCard board={item} wardrobeById={wardrobeById} onDelete={() => setPendingBoardDelete(item)} />} showsVerticalScrollIndicator={false} ListHeaderComponent={<Text style={styles.collectionCount}>{boards.length} PANO  /  SENİN İLHAMIN</Text>} />
       ) : entries.length === 0 ? (
         <View style={styles.centerState}><View style={styles.emptyCard}><Feather name="camera" size={32} color={colors.sage} /><Text style={styles.emptyTitle}>İlk kareyi ekle</Text><Text style={styles.stateText}>Bugünkü görünümün bu defterin ilk sayfası olsun.</Text></View></View>
       ) : (
-        <FlatList key={columns} data={entries} keyExtractor={(entry) => entry.id} numColumns={columns} columnWrapperStyle={styles.gridRow} contentContainerStyle={styles.gridContent} renderItem={({ item }) => <GalleryCard entry={item} width={cardWidth} onDelete={() => setPendingDelete(item)} />} showsVerticalScrollIndicator={false} ListHeaderComponent={<Text style={styles.collectionCount}>{entries.length} KARE  /  SENİN STİL HİKÂYEN</Text>} />
+        <FlatList onScroll={onScroll} scrollEventThrottle={16} key={columns} data={entries} keyExtractor={(entry) => entry.id} numColumns={columns} columnWrapperStyle={styles.gridRow} contentContainerStyle={styles.gridContent} renderItem={({ item }) => <GalleryCard entry={item} width={cardWidth} onDelete={() => setPendingDelete(item)} />} showsVerticalScrollIndicator={false} ListHeaderComponent={<Text style={styles.collectionCount}>{entries.length} KARE  /  SENİN STİL HİKÂYEN</Text>} />
       )}
         </View>
       </TouchableWithoutFeedback>

@@ -13,6 +13,7 @@ for (const name of ['EXPO_PUBLIC_WORKER_URL','EXPO_PUBLIC_PRIVACY_URL','EXPO_PUB
   catch { failures.push(`${name}: geçerli HTTPS adresi gerekli`); }
 }
 for (const name of Object.keys(process.env)) if (/^EXPO_PUBLIC_.*(OPENAI|PRIVATE_KEY|SERVICE_ACCOUNT|R2_SECRET|REVENUECAT_SECRET)/i.test(name)) failures.push(`${name}: secret mobil pakete eklenemez`);
+if(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID?.trim()&&process.env.EXPO_PUBLIC_APPLE_SIGNIN_ENABLED?.trim().toLowerCase()!=='true')failures.push('EXPO_PUBLIC_APPLE_SIGNIN_ENABLED=true gerekli: iOS\'ta Google girişi varken Apple ile giriş de sunulmalı (App Store guideline 4.8) / Sign in with Apple must be offered alongside Google on iOS');
 const app=JSON.parse(fs.readFileSync('app.json','utf8')).expo;
 if(!app.ios.usesAppleSignIn||!app.plugins.includes('expo-apple-authentication')||!app.plugins.includes('expo-secure-store'))failures.push('Apple sign-in / SecureStore yapılandırması eksik');
 const worker=fs.readFileSync('api-worker/wrangler.toml','utf8');

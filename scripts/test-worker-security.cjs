@@ -145,12 +145,12 @@ async function main() {
   assert.equal((await request('/delete-object',{key})).status,200);assert.equal(guard.data.get('budget').monthlyBytes,223);
   let last=200;for(let i=0;i<70&&last!==429;i++)last=(await request('/delete-object',{key})).status;assert.equal(last,429);
  });
- await check('S12: forced subscription refresh honoured at most every 30 s',async()=>{
+ await check('S12: forced subscription refresh honoured at most every 5 s',async()=>{
   let rc=0;const before=env.REVENUECAT_SECRET_KEY;const t=await token('refresher');
   const post=force=>request('/subscription-status',{force},t);
   await post(false);const first=await post(true);assert.equal(first.status,200);
   const cache=state('rate:refresher').data.get('plan').at;await post(true);assert.equal(state('rate:refresher').data.get('plan').at,cache);
-  now+=31000;await post(true);assert.ok(state('rate:refresher').data.get('plan').at>cache);
+  now+=6000;await post(true);assert.ok(state('rate:refresher').data.get('plan').at>cache);
  });
  const appCheck=async(claims={},options={})=>new jose.SignJWT({...claims}).setProtectedHeader({alg:'RS256'}).setAudience(options.aud??['projects/123456']).setIssuer(options.iss??'https://firebaseappcheck.googleapis.com/123456').setSubject('1:123456:ios:abc').setIssuedAt().setExpirationTime('1h').sign(privateKey);
  await check('App Check soft mode: invalid/missing allowed, valid allowed',async()=>{

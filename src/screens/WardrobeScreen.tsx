@@ -10,6 +10,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { useUserId } from '../auth/AuthContext';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { ScreenHeading } from '../components/ScreenHeading';
+import { useHeaderScroll } from '../components/useHeaderScroll';
 import { buildWardrobeSummary, getOutfitHistory, type OutfitHistoryEntry } from '../data/outfitHistory';
 import { CLOTHING_TYPES, FIT_TYPES, SUBTYPES, deleteClothingItem, getClothingPage, updateClothingTags, type ClothingItem, type ClothingTags } from '../data/wardrobe';
 import type { MainTabParamList, RootStackParamList } from '../navigation/AppNavigator';
@@ -136,9 +137,14 @@ export function WardrobeScreen() {
     );
   }
 
+  const { scrollY, onScroll, resetHeader } = useHeaderScroll();
+  // A different list (loading, empty, grid) starts at the top, so the heading must be full size again.
+  useEffect(() => { resetHeader(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, loadError, items.length === 0]);
+
   return (
     <ScreenFrame>
-      <ScreenHeading eyebrow="NE GİYSEM?  /  01" title="Gardırobun" subtitle="Sevdiğin parçaların küçük bir arşivi." showNotifications onSettingsPress={() => navigation.navigate('Settings')} />
+      <ScreenHeading eyebrow="NE GİYSEM?  /  01" title="Gardırobun" subtitle="Sevdiğin parçaların küçük bir arşivi." showNotifications onSettingsPress={() => navigation.navigate('Settings')} scrollY={scrollY} />
       <PlanBanner />
       {isLoading ? (
         <View style={styles.centerState}><ActivityIndicator size="large" color={colors.sage} /><Text style={styles.stateText}>Gardırobun açılıyor...</Text></View>
@@ -149,7 +155,7 @@ export function WardrobeScreen() {
           <View style={styles.retryButton}><PrimaryButton label="Tekrar dene" icon="refresh-cw" onPress={() => setRetryCount((count) => count + 1)} /></View>
         </View>
       ) : items.length === 0 ? (
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} onScroll={onScroll} scrollEventThrottle={16}>
           <View style={styles.card}>
             <View style={styles.cornerTopLeft} />
             <View style={styles.cornerBottomRight} />
@@ -164,6 +170,8 @@ export function WardrobeScreen() {
       ) : (
         <FlatList
           key={columns}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
           data={items}
           keyExtractor={(item) => item.id}
           numColumns={columns}

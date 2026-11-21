@@ -2,6 +2,17 @@ import { requireAiConsent } from './aiConsent';
 import { FIT_TYPES, SUBTYPES, type ClothingFormality, type ClothingTags } from '../data/wardrobe';
 import { workerPost } from './workerApi';
 
+export type SubjectBox = { x: number; y: number; width: number; height: number };
+
+function parseSubjectBox(value: unknown): SubjectBox | null {
+  if (!value || typeof value !== 'object') return null;
+  const { x, y, width, height } = value as Record<string, unknown>;
+  if (![x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  const box = { x: x as number, y: y as number, width: width as number, height: height as number };
+  if (box.x < 0 || box.y < 0 || box.width < 0.05 || box.height < 0.05 || box.x + box.width > 1.0001 || box.y + box.height > 1.0001) return null;
+  return box;
+}
+
 const CLOTHING_TYPES = ['üst', 'alt', 'dış giyim', 'ayakkabı', 'aksesuar'];
 
 function parseTags(value: unknown): ClothingTags {
@@ -31,9 +42,10 @@ function parseTags(value: unknown): ClothingTags {
   };
 }
 
-export async function analyzeClothing(userId: string, base64Jpeg: string, signal?: AbortSignal): Promise<ClothingTags> {
+export async function analyzeClothing(userId: string, base64Jpeg: string, signal?: AbortSignal): Promise<{ tags: ClothingTags; subjectBox: SubjectBox | null }> {
   if (!base64Jpeg) throw new Error('Fotoğraf verisi okunamadı. Lütfen başka bir fotoğraf seç.');
   await requireAiConsent(userId);
   const result = await workerPost<{ tags: unknown }>(userId, '/analyze-clothing', { aiConsent: true, imageBase64: base64Jpeg, mimeType: 'image/jpeg' }, signal);
-  return parseTags(result.tags);
+  const raw = result.tags as { subjectBox?: unknown } | null;
+  return { tags: parseTags(result.tags), subjectBox: parseSubjectBox(raw?.subjectBox) };
 }

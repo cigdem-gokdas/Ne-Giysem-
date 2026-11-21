@@ -1,10 +1,10 @@
-import { EmailAuthProvider, reauthenticateWithCredential, signOut } from 'firebase/auth';
+import { EmailAuthProvider, GoogleAuthProvider, reauthenticateWithCredential, signOut } from 'firebase/auth';
 import { firebaseAuth } from '../config/firebase';
 import { workerPost } from '../services/workerApi';
 import { appleCredential } from '../auth/apple';
 import { authErrorMessage } from '../auth/authErrors';
 
-export async function deleteUserAccount(userId: string, currentPassword?: string): Promise<void> {
+export async function deleteUserAccount(userId: string, currentPassword?: string, googleIdToken?: string): Promise<void> {
   const current = firebaseAuth.currentUser;
   if (!current || current.uid !== userId) throw new Error('Hesap bulunamadı.');
   let appleAuthorizationCode: string | undefined;
@@ -12,6 +12,10 @@ export async function deleteUserAccount(userId: string, currentPassword?: string
     // Reauthenticate BEFORE touching any stored data.
     const hasPassword = current.providerData.some((p) => p.providerId === 'password');
     const hasApple = current.providerData.some((p) => p.providerId === 'apple.com');
+    if (current.providerData.some((p) => p.providerId === 'google.com') && !hasPassword) {
+      if (!googleIdToken) throw new Error('Hesabını silmek için Google ile yeniden doğrulama yapmalısın.');
+      await reauthenticateWithCredential(current, GoogleAuthProvider.credential(googleIdToken));
+    }
     if (hasPassword) {
       if (!current.email || !currentPassword) throw new Error('Mevcut şifreni yazmalısın.');
       await reauthenticateWithCredential(current, EmailAuthProvider.credential(current.email, currentPassword));
